@@ -1,6 +1,7 @@
 # pspectra.py
 import numpy as np
 
+
 def eisenstein_hu_nowiggle_T(k, Om=0.315, h=0.674):
     Gamma = Om * h
     q = np.where(Gamma > 0, k / Gamma, 0.0)

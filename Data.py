@@ -1,11 +1,13 @@
 from dataclasses import dataclass, field
 import numpy as np
-from helper_tools import kgrid_rfft3d, rfft_multiplicity_last_axis, spectral_d_dz, make_triangular_rays_mask
+from helper_tools import kgrid_rfft3d, rfft_multiplicity_last_axis, spectral_d_dz, make_triangular_rays_mask, cdiff4, grad4_scalar
+from helper_tools import  div4_vector, los_unit_and_radius, radial_divergence_flux4, radial_divergence_identity4, divergence_of_radial_flux_highorder, radial_linear_rsd_highorder
 from Box import Box
 from Cosmology import Cosmology
 from pspectra import Pk_phys_nowiggle, Pk_phys_at_z_from_P0
 from typing import Optional
 from pspectra_camb import build_camb_pk_callable
+
 
 @dataclass
 class Data:

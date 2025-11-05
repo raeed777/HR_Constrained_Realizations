@@ -509,8 +509,6 @@ def plot_mask_3d_voxels(M, box=None, stride=None, max_voxels=200_000, alpha=0.18
     plt.show()
 
 
-import numpy as np
-
 def make_cone_mask_with_subcones(
     box,
     los_dir="z",                 # "x","y","z" or 3-vector
@@ -930,3 +928,209 @@ def subcone_footprints_on_slice(debug, box, *,
             footprints.append({"x": x0, "y": y0, "a": a_sem, "b": b, "theta_deg": theta})
 
     return footprints
+
+
+import numpy as np
+
+################## tools for radial calculations for the rsd delta ###############################
+
+
+# ========== Low-level 4th-order finite-difference ops ==========
+def cdiff4(u, axis, dx, periodic=True):
+    """
+    4th-order central derivative along `axis`:
+      ∂_axis u ≈ [ -u_{i+2} + 8 u_{i+1} - 8 u_{i-1} + u_{i-2} ] / (12 dx)
+    If periodic=False, assume `u` is already padded with >=2 cells on each side.
+    """
+    if periodic:
+        up2 = np.roll(u, -2, axis=axis)
+        up1 = np.roll(u, -1, axis=axis)
+        um1 = np.roll(u, +1, axis=axis)
+        um2 = np.roll(u, +2, axis=axis)
+        return (-up2 + 8*up1 - 8*um1 + um2) / (12.0 * dx)
+    else:
+        # interior only; caller slices away 2 cells later
+        slc = [slice(None)]*u.ndim
+        # convenience rolls (still use roll; padded values make boundary valid)
+        up2 = np.roll(u, -2, axis=axis)
+        up1 = np.roll(u, -1, axis=axis)
+        um1 = np.roll(u, +1, axis=axis)
+        um2 = np.roll(u, +2, axis=axis)
+        der = (-up2 + 8*up1 - 8*um1 + um2) / (12.0 * dx)
+        return der
+
+def grad4_scalar(u, dx, periodic=True):
+    """Return ∇u = (∂x u, ∂y u, ∂z u) via 4th-order central differences."""
+    gx = cdiff4(u, 0, dx, periodic)
+    gy = cdiff4(u, 1, dx, periodic)
+    gz = cdiff4(u, 2, dx, periodic)
+    return gx, gy, gz
+
+def div4_vector(Fx, Fy, Fz, dx, periodic=True):
+    """Return ∇·F = ∂x Fx + ∂y Fy + ∂z Fz via 4th-order central differences."""
+    dFx = cdiff4(Fx, 0, dx, periodic)
+    dFy = cdiff4(Fy, 1, dx, periodic)
+    dFz = cdiff4(Fz, 2, dx, periodic)
+    return dFx + dFy + dFz
+
+
+# ========== Geometry: build LOS unit vectors from a point observer ==========
+def los_unit_and_radius(box, observer_xyz, periodic=False, pad=0):
+    """
+    Build fields (nx, ny, nz, r) on the grid.
+    The grid is assumed centered at L/2 in each axis.
+    If periodic=False and pad>0, returns arrays with the padding included.
+    """
+    n, L = box.n, box.L
+    dx = box.dx
+    # coordinates of *cell centers*
+    if periodic or pad == 0:
+        ax = (np.arange(n) + 0.5) * dx
+        X, Y, Z = np.meshgrid(ax, ax, ax, indexing="ij")
+    else:
+        Np = n + 2*pad
+        axp = (np.arange(Np) + 0.5) * dx
+        X, Y, Z = np.meshgrid(axp, axp, axp, indexing="ij")
+
+    cx = cy = cz = 0.5 * L  # box center
+    x0, y0, z0 = observer_xyz
+
+    RX = X - x0
+    RY = Y - y0
+    RZ = Z - z0
+    r  = np.sqrt(RX*RX + RY*RY + RZ*RZ)
+    # avoid divide-by-zero in case observer lies exactly on-grid
+    invr = 1.0 / np.maximum(r, 1e-12)
+    nx, ny, nz = RX*invr, RY*invr, RZ*invr
+    return nx, ny, nz, r
+
+
+
+# ========== Method A: Conservative flux form ==========
+def radial_divergence_flux4(v, nx, ny, nz, dx, periodic=True):
+    """
+    Compute ∇·[ n (n·v) ] with n = (nx,ny,nz).
+    Math: F = n(n·v) is a vector with components F_i = n_i * (n·v).
+          We compute ∇·F with 4th-order central differences (conservative).
+    Inputs:
+      v  : shape (3, n, n, n) vector field (vx,vy,vz)
+      nx,ny,nz : LOS unit components on the same grid
+      dx : grid spacing
+    Returns:
+      div : shape (n,n,n)
+    """
+    vr = nx*v[0] + ny*v[1] + nz*v[2]
+    Fx = nx * vr
+    Fy = ny * vr
+    Fz = nz * vr
+    return div4_vector(Fx, Fy, Fz, dx, periodic=periodic)
+
+
+# ========== Method B: Radial identity (point observer) ==========
+def radial_divergence_identity4(v, nx, ny, nz, r, dx, periodic=True):
+    """
+    Compute \hat r \hat r : ∇v + (2/r) v_r with 4th-order central differences.
+    Math:
+      (1) Compute all spatial derivatives ∂_i v_j (i,j in {x,y,z});
+      (2) Contract: sum_{i,j} n_i n_j ∂_i v_j;
+      (3) Add geometric term: (2/r) (n·v).
+    Inputs:
+      v  : (3,n,n,n)
+      nx,ny,nz : LOS unit components
+      r  : radius field
+      dx : grid spacing
+    Returns:
+      div : (n,n,n)
+    """
+    dvx = grad4_scalar(v[0], dx, periodic)  # (∂x vx, ∂y vx, ∂z vx)
+    dvy = grad4_scalar(v[1], dx, periodic)
+    dvz = grad4_scalar(v[2], dx, periodic)
+
+    # n_i n_j ∂_i v_j
+    term = (nx*(nx*dvx[0] + ny*dvy[0] + nz*dvz[0]) +
+            ny*(nx*dvx[1] + ny*dvy[1] + nz*dvz[1]) +
+            nz*(nx*dvx[2] + ny*dvy[2] + nz*dvz[2]))
+
+    vr = nx*v[0] + ny*v[1] + nz*v[2]
+    geom = 2.0 * vr / np.maximum(r, 1e-12)
+    return term + geom
+
+
+# ========== Wrapper: build-and-apply with padding or periodic BC ==========
+def divergence_of_radial_flux_highorder(
+    v, box, observer_xyz,
+    *,
+    method="flux4",        # "flux4" or "identity4"
+    periodic=False,        # if False, we pad and return trimmed interior
+    pad=2, pad_mode="reflect"
+):
+    """
+    High-order divergence of radial flux for variable LOS.
+
+    Math goals:
+      - flux4:  ∇·[ n (n·v) ]  with n = \hat r (from a point observer)
+      - identity4:  \hat r \hat r : ∇v + (2/r) v_r  (explicit identity)
+
+    Inputs:
+      v           : (3,n,n,n) velocity on the box grid
+      box         : has attributes n, L, dx
+      observer_xyz: (x0,y0,z0) of the observer in the same units as box (Mpc/h)
+      method      : "flux4" (recommended) or "identity4"
+      periodic    : True -> periodic grid; False -> pad by `pad` and trim
+      pad,mode    : padding controls for non-periodic runs
+
+    Returns:
+      div_radial  : (n,n,n) array on the *original* box grid
+    """
+    n, dx = box.n, box.dx
+
+    if periodic:
+        nx, ny, nz, r = los_unit_and_radius(box, observer_xyz, periodic=True, pad=0)
+        if method == "flux4":
+            div = radial_divergence_flux4(v, nx, ny, nz, dx, periodic=True)
+        elif method == "identity4":
+            div = radial_divergence_identity4(v, nx, ny, nz, r, dx, periodic=True)
+        else:
+            raise ValueError("method must be 'flux4' or 'identity4'")
+        return div
+
+    # Non-periodic: pad, compute on padded grid, then trim interior
+    p = int(max(2, pad))
+    def _pad(u): return np.pad(u, ((p,p),)*3, mode=pad_mode)
+
+    # pad v and build LOS on padded grid
+    vp = np.stack([_pad(v[0]), _pad(v[1]), _pad(v[2])], axis=0)
+    nx, ny, nz, r = los_unit_and_radius(box, observer_xyz, periodic=False, pad=p)
+
+    if method == "flux4":
+        divp = radial_divergence_flux4(vp, nx, ny, nz, dx, periodic=False)
+    elif method == "identity4":
+        divp = radial_divergence_identity4(vp, nx, ny, nz, r, dx, periodic=False)
+    else:
+        raise ValueError("method must be 'flux4' or 'identity4'")
+
+    # trim back to original box (p=2 matches 4th-order stencil footprint)
+    div = divp[p:-p, p:-p, p:-p]
+    assert div.shape == (n, n, n)
+    return div
+
+
+# ========== Example: radial linear RSD (δ_s = δ - (1/aH) ∇·[n(n·v)]) ==========
+def radial_linear_rsd_highorder(
+    delta, v, box, a, H, observer_xyz,
+    *,
+    method="flux4", periodic=False, pad=2, pad_mode="reflect"
+):
+    """
+    Compute linear radial RSD:
+      δ_s = δ - (1/(aH)) ∇·[ \hat r (\hat r·v) ]
+    using 4th-order accuracy for the divergence.
+
+    - `method="flux4"`: conservative divergence of n(n·v) (captures geometric terms).
+    - `method="identity4"`: uses \hat r\hat r:∇v + (2/r) v_r explicitly.
+    """
+    div_rad = divergence_of_radial_flux_highorder(
+        v, box, observer_xyz, method=method,
+        periodic=periodic, pad=pad, pad_mode=pad_mode
+    )
+    return delta - (1.0/(a*H)) * div_rad

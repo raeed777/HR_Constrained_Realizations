@@ -7,6 +7,7 @@ from helper_tools import kgrid_rfft3d
 
 Array = np.ndarray
 
+
 def delta_from_phi(phi, box, a, H, f, mode="stencil"):
     n = box.n; dx = box.dx
     assert phi is not None, "delta_from_phi: 'phi' is None"

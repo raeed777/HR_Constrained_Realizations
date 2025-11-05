@@ -381,6 +381,7 @@ def Constrained_realization_real_space_stencils(
 ):
     rng = np.random.default_rng() if rng is None else rng
 
+
     b_bias = float(obs_data.b_bias)
     # tolerate either .sigma or .sigma_noise
     sigma_x = getattr(obs_data, "sigma", None)
