@@ -9,8 +9,11 @@ Array = np.ndarray
 
 
 def delta_from_phi(phi, box, a, H, f, mode="stencil"):
+    
     n = box.n; dx = box.dx
     assert phi is not None, "delta_from_phi: 'phi' is None"
+    if isinstance(phi, (tuple, list)):
+        phi = phi[0]
     phi = np.asarray(phi)
     assert phi.shape == (n, n, n), f"delta_from_phi: expected phi shape {(n,n,n)}, got {phi.shape}"
 
@@ -40,6 +43,10 @@ def velocity_from_phi(phi: Array, box: Box, mode: str = "stencil") -> Optional[A
         # silent None passthrough so callers can guard easily
         return None
 
+    if isinstance(phi, (tuple, list)):
+        phi = phi[0]
+    phi = np.asarray(phi)
+    
     n, dx = box.n, box.dx
 
     def vel_from_phi_stencil(phi_local: Array) -> Array:

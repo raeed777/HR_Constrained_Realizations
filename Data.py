@@ -128,10 +128,19 @@ class Data:
         disp_phys = vz / (a * H)            # Mpc/h
         d_vz_dz = spectral_d_dz(vz, dx)
         self.delta_s_z = self.delta_r - (1.0/(a*H)) * d_vz_dz
+
+    def calc_lin_r_rsd_delta(self, distance):
+        obs_x = 0
+        obs_y = 0
+        obs_z = -1 * distance * self.box.L
+        obs_xyz = [obs_x, obs_y, obs_z]
+        a = self.cosmology.a
+        H = self.cosmology.H
+        self.delta_s_r = radial_linear_rsd_highorder(self.delta_r, self.v_fft, self.box, a, H, obs_xyz)
     
-    def generate_mock_fields(self, rng=None, Pk_callable=None):
+    def generate_mock_fields(self, distance = 0, rng=None, Pk_callable=None):
         self.sample_delta_from_Pk(rng, Pk_callable=Pk_callable)
         self.calc_phi()
         self.calc_lin_z_rsd_delta()
-
+        self.calc_lin_r_rsd_delta(distance)
     

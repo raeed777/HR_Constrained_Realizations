@@ -181,7 +181,7 @@ def _make_Wx(sigma_x, M=None, eps=0.0):
 # -----------------------
 # Build matvecs (A·x) & RHS for PP–RSD (spectral L)
 # -----------------------
-def make_matvec_and_rhs_rsd_spectral(ops: Operators, b_bias, sigma_x, d, M=None, eps=0.0):
+def make_matvec_and_rhs_pp_rsd_spectral(ops: Operators, b_bias, sigma_x, d, M=None, eps=0.0):
     """
     Optional mask M. Per-voxel sigma_x allowed. L is PP–RSD in k-space; W multiplies in real space.
     """
@@ -200,7 +200,7 @@ def make_matvec_and_rhs_rsd_spectral(ops: Operators, b_bias, sigma_x, d, M=None,
 # -----------------------
 # Build matvecs (A·x) & RHS for PP–RSD (stencil L)
 # -----------------------
-def make_matvec_and_rhs_rsd_stencil(ops: Operators, b_bias, sigma_x, d, M=None, eps=0.0):
+def make_matvec_and_rhs_pp_rsd_stencil(ops: Operators, b_bias, sigma_x, d, M=None, eps=0.0):
     W_x = _make_Wx(sigma_x, M, eps)
 
     def apply_A(x):
@@ -248,7 +248,7 @@ def make_matvec_and_rhs_realspace_stencil(ops: Operators, b_bias, sigma_x, d, M=
     rhs = b_bias * ops.apply_L_stencil(W_x * d)
     return apply_A, rhs
 
-############################# solvers ##############################
+#############################  real space solvers ##############################
 from Observed_Data import ObservedData
 from Data import Data
 
@@ -442,3 +442,181 @@ def Constrained_realization_real_space_stencils(
     # 4) constrained realization
     phi_cr = phi_rand + phi_corr
     return phi_cr
+
+
+################################z rsd solver ####################################
+# --- Wiener mean (z rsd, spectral L) ---
+def Wiener_solve_pp_rsd_fft(
+    ops_fft: Operators,
+    obs_data: ObservedData,
+    rtol=1e-6, maxit=300, verbose=True, return_precond=False
+):
+    b_bias  = float(obs_data.b_bias)
+    sigma_x = _get_sigma_x(obs_data)
+    d       = obs_data.d
+    M       = getattr(obs_data, "mask", None)
+
+    precond = make_precond_Sphi_spectral(ops_fft)
+    # If you named the builder differently, adjust here:
+    A, rhs  = make_matvec_and_rhs_pp_rsd_spectral(ops_fft, b_bias=b_bias, sigma_x=sigma_x, d=d, M=M)
+
+    t0 = time.perf_counter()
+    phi = pcg(A, rhs, apply_Minv=precond, rtol=rtol, maxit=maxit, verbose=verbose)
+    if verbose:
+        print(f"[Spectral L] total solve time: {time.perf_counter()-t0:.2f}s")
+
+    return (phi, A, rhs, precond) if return_precond else (phi, A, rhs)
+
+
+# --- One HR constrained realization (REAL space, spectral L) ---
+def Constrained_realization_pp_rsd_fft(
+    ops_fft: Operators,
+    obs_data: ObservedData,
+    rng=None, rtol=1e-6, maxit=300, verbose=False,
+    reuse=None     # optionally pass (A_fft, precond_fft) for many HR draws
+):
+    """
+    Hoffman–Ribak constrained realization using the spectral branch.
+    Consistent with:
+      - prior S_phi(k) = (a H f)^2 P_delta(k) / k^4
+      - forward L_real_fft: δ = -(k^2/(a H f)) φ
+    """
+    rng = np.random.default_rng() if rng is None else rng
+
+    b_bias  = float(obs_data.b_bias)
+    sigma_x = _get_sigma_x(obs_data)
+    d       = obs_data.d
+    M       = getattr(obs_data, "mask", None)
+    box     = obs_data.box
+    cosmo   = obs_data.cosmology
+
+    # 1) prior draw via your Data generator; ensure phi_fft exists
+    truth = Data(box, cosmo)
+    truth.generate_mock_fields(rng=rng)                 # builds delta_r, etc.
+    if getattr(truth, "phi_fft", None) is None:
+        if hasattr(truth, "calc_phi"):
+            truth.calc_phi()                     # fills phi_fft & phi_sten
+        else:
+            raise AttributeError("Data lacks calc_phi(); needed to compute phi_fft.")
+    phi_rand = truth.phi_fft
+
+    # 2) mock observation with spectral forward model and fresh noise
+    nshape = (box.n, box.n, box.n)
+    if np.isscalar(sigma_x):
+        n_rand = rng.normal(0.0, float(sigma_x), size=nshape)
+    else:
+        sig = np.asarray(sigma_x, float)
+        n_rand = rng.normal(0.0, 1.0, size=sig.shape) * sig
+
+    # y_rand = M [ b L φ_rand + n_rand ]
+    y_rand = b_bias * ops_fft.apply_L_rsd_pp_fft(phi_rand) + n_rand
+    if M is not None:
+        y_rand = np.asarray(M, float) * y_rand
+
+    # 3) residual and Wiener correction with the SAME system
+    residual = d - y_rand
+
+    if reuse is not None:
+        A_fft, precond_fft = reuse
+        # Rebuild the RHS for the new residual directly (same as your builder)
+        eps = 1e-30
+        W_x = (np.asarray(M, float) if M is not None else 1.0) / (np.asarray(sigma_x, float)**2 + eps)
+        rhs_fft = b_bias * ops_fft.apply_L_rsd_pp_fft(W_x * residual)
+        phi_corr = pcg(A_fft, rhs_fft, apply_Minv=precond_fft,
+                       rtol=rtol, maxit=maxit, verbose=verbose)
+    else:
+        phi_corr, A_fft, rhs_fft = Wiener_solve_pp_rsd_fft(
+            ops_fft, obs_data=obs_data.__class__(**{**obs_data.__dict__, "d": residual}), rtol=rtol, maxit=maxit, verbose=verbose
+        )
+        # ^ light trick: reuse same builder by passing a shallow copy with d=residual
+
+    # 4) constrained realization
+    return phi_rand + phi_corr
+
+# --- Wiener mean (z rsd, stencil L) ---
+def Wiener_solve_pp_rsd_stencils(
+    ops_fft: Operators,
+    obs_data: ObservedData,
+    rtol=1e-6, maxit=300, verbose=True, return_precond=False
+):
+    b_bias  = float(obs_data.b_bias)
+    sigma_x = _get_sigma_x(obs_data)
+    d       = obs_data.d
+    M       = getattr(obs_data, "mask", None)
+
+    precond = make_precond_Sphi_stencil(ops_fft)
+    # If you named the builder differently, adjust here:
+    A, rhs  = make_matvec_and_rhs_pp_rsd_stencil(ops_fft, b_bias=b_bias, sigma_x=sigma_x, d=d, M=M)
+
+    t0 = time.perf_counter()
+    phi = pcg(A, rhs, apply_Minv=precond, rtol=rtol, maxit=maxit, verbose=verbose)
+    if verbose:
+        print(f"[Spectral L] total solve time: {time.perf_counter()-t0:.2f}s")
+
+    return (phi, A, rhs, precond) if return_precond else (phi, A, rhs)
+
+
+# --- One HR constrained realization (REAL space, spectral L) ---
+def Constrained_realization_pp_rsd_stencils(
+    ops_sten: Operators,
+    obs_data: ObservedData,
+    rng=None, rtol=1e-6, maxit=300, verbose=False,
+    reuse=None     # optionally pass (A_fft, precond_fft) for many HR draws
+):
+    """
+    Hoffman–Ribak constrained realization using the spectral branch.
+    Consistent with:
+      - prior S_phi(k) = (a H f)^2 P_delta(k) / k^4
+      - forward L_real_fft: δ = -(k^2/(a H f)) φ
+    """
+    rng = np.random.default_rng() if rng is None else rng
+
+    b_bias  = float(obs_data.b_bias)
+    sigma_x = _get_sigma_x(obs_data)
+    d       = obs_data.d
+    M       = getattr(obs_data, "mask", None)
+    box     = obs_data.box
+    cosmo   = obs_data.cosmology
+
+    # 1) prior draw via your Data generator; ensure phi_fft exists
+    truth = Data(box, cosmo)
+    truth.generate_mock_fields(rng=rng)                 # builds delta_r, etc.
+    if getattr(truth, "phi_sten", None) is None:
+        if hasattr(truth, "calc_phi"):
+            truth.calc_phi()                     # fills phi_fft & phi_sten
+        else:
+            raise AttributeError("Data lacks calc_phi(); needed to compute phi_fft.")
+    phi_rand = truth.phi_sten
+
+    # 2) mock observation with spectral forward model and fresh noise
+    nshape = (box.n, box.n, box.n)
+    if np.isscalar(sigma_x):
+        n_rand = rng.normal(0.0, float(sigma_x), size=nshape)
+    else:
+        sig = np.asarray(sigma_x, float)
+        n_rand = rng.normal(0.0, 1.0, size=sig.shape) * sig
+
+    # y_rand = M [ b L φ_rand + n_rand ]
+    y_rand = b_bias * ops_sten.apply_L_rsd_pp_stencil(phi_rand) + n_rand
+    if M is not None:
+        y_rand = np.asarray(M, float) * y_rand
+
+    # 3) residual and Wiener correction with the SAME system
+    residual = d - y_rand
+
+    if reuse is not None:
+        A_sten, precond_sten = reuse
+        # Rebuild the RHS for the new residual directly (same as your builder)
+        eps = 1e-30
+        W_x = (np.asarray(M, float) if M is not None else 1.0) / (np.asarray(sigma_x, float)**2 + eps)
+        rhs_sten = b_bias * ops_sten.apply_L_rsd_pp_stencil(W_x * residual)
+        phi_corr = pcg(A_sten, rhs_sten, apply_Minv=precond_sten,
+                       rtol=rtol, maxit=maxit, verbose=verbose)
+    else:
+        phi_corr, A_sten, rhs_sten = Wiener_solve_pp_rsd_stencils(
+            ops_sten, obs_data=obs_data.__class__(**{**obs_data.__dict__, "d": residual}), rtol=rtol, maxit=maxit, verbose=verbose
+        )
+        # ^ light trick: reuse same builder by passing a shallow copy with d=residual
+
+    # 4) constrained realization
+    return phi_rand + phi_corr

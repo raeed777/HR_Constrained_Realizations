@@ -20,7 +20,7 @@ class ObservedData(Data):
     noise: Optional[Array] = field(default=None, repr=False)   # noise
     sigma_noise: float = 0.0
     b_bias: float = 1.0
-    dataset: Literal["real", "pp"] = "real"                     # "real" or plane-parallel "pp"
+    dataset: Literal["real", "pp", "radial"] = "real"                     # "real" or plane-parallel "pp"
 
     # Outputs
     d: Optional[Array] = field(default=None, repr=False)
@@ -36,8 +36,12 @@ class ObservedData(Data):
     def generate_artificial_noise(self, sigma_frac=0.2, jitter_frac=0.0):
         if self.dataset == "real":
             obs_field = self.delta_r
-        else:
+        elif self.dataset == "pp":
             obs_field = self.delta_s_z
+        elif self.dataset == "radial":
+            obs_field = self.delta_s_r
+        else:
+            print("choose the correct type!")
         rng = np.random.default_rng(42)
         n = obs_field.shape[0]
 
@@ -54,8 +58,12 @@ class ObservedData(Data):
     def add_noise_and_mask(self):
         if self.dataset == "real":
             obs_field = self.delta_r
-        else:
+        elif self.dataset == "pp":
             obs_field = self.delta_s_z
+        elif self.dataset == "radial":
+            obs_field = self.delta_s_r
+        else:
+            print("choose the correct data type!!")
 
         M = np.ones_like(field, dtype=np.float64) if self.mask is None else self.mask.astype(np.float64)
 
