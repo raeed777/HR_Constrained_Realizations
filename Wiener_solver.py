@@ -1,7 +1,7 @@
 import numpy as np
 from Box import Box
 from Cosmology import Cosmology
-from helper_tools import kgrid_rfft3d, Pphi_from_Pdelta, los_unit_and_radius
+from helper_tools import kgrid_rfft3d, Pphi_from_Pdelta, los_unit_and_radius, d1_4, d2_4, d2_mixed_4
 import pickle, time
 
 
@@ -91,7 +91,7 @@ class Operators:
         self._nhat = (nx.astype(np.float32), ny.astype(np.float32), nz.astype(np.float32))
         self._invR = (1.0 / np.maximum(r, 1e-30)).astype(np.float32)
 
-
+#############################################
 
     # ----- prior terms -----
     def apply_Sphi_inv_fft(self, x):
@@ -105,6 +105,9 @@ class Operators:
         Yk = self.Sphi_inv_k_sten * Xk
         Yk[0,0,0] = 0.0
         return np.fft.irfftn(Yk, s=x.shape)
+
+
+#############################################
 
     # ----- spectral L_rsd_pp (FFT) -----
     def apply_L_rsd_pp_fft(self, phi):
@@ -124,6 +127,7 @@ class Operators:
         dzz = self._d2_axis(phi,2,dx)
         return (lap + self.f * dzz) / (self.a*self.H*self.f)
     
+#############################################
 
     # ----- spectral L real space (FFt) -----
     def apply_L_real_fft(self, phi):
@@ -137,6 +141,177 @@ class Operators:
         lap = (self._d2_axis(x,0,dx) + self._d2_axis(x,1,dx) + self._d2_axis(x,2,dx))
         return lap / (self.a*self.H*self.f)
 
+#############################################
+
+# ========= NEW: radial RSD apply (hybrid spectral) =========
+    def apply_L_rsd_radial_fft(self, phi, include_geom=False):
+        a, H, f = self.a, self.H, self.f
+        KX, KY, KZ, K2 = self.KX, self.KY, self.KZ, self.K2
+
+        Phik = np.fft.rfftn(phi, s=phi.shape)
+
+        lap = np.fft.irfftn(-K2 * Phik, s=phi.shape).real
+        Hxx = np.fft.irfftn(-(KX*KX) * Phik, s=phi.shape).real
+        Hyy = np.fft.irfftn(-(KY*KY) * Phik, s=phi.shape).real
+        Hzz = np.fft.irfftn(-(KZ*KZ) * Phik, s=phi.shape).real
+        Hxy = np.fft.irfftn(-(KX*KY) * Phik, s=phi.shape).real
+        Hxz = np.fft.irfftn(-(KX*KZ) * Phik, s=phi.shape).real
+        Hyz = np.fft.irfftn(-(KY*KZ) * Phik, s=phi.shape).real
+
+        nx, ny, nz = self._nhat
+        dnn = (nx*nx)*Hxx + (ny*ny)*Hyy + (nz*nz)*Hzz + 2*(nx*ny)*Hxy + 2*(nx*nz)*Hxz + 2*(ny*nz)*Hyz
+
+        inner = lap + f * dnn
+
+        if include_geom:
+            # v_r = -∂_n φ computed spectrally
+            phi_x = np.fft.irfftn((1j*KX) * Phik, s=phi.shape).real
+            phi_y = np.fft.irfftn((1j*KY) * Phik, s=phi.shape).real
+            phi_z = np.fft.irfftn((1j*KZ) * Phik, s=phi.shape).real
+            vr = -(nx*phi_x + ny*phi_y + nz*phi_z)
+            inner = inner - 2.0 * f * vr * self._invR
+
+        return -inner / (a*H*f + 1e-30)
+    
+    def apply_Lt_rsd_radial_fft(self, y, include_geom=False):
+        """
+        Adjoint of the radial RSD operator under periodic BCs.
+
+        If include_geom=False:
+            L = -(∇² + f n_i n_j ∂i∂j)/(a H f) is self-adjoint ⇒ L^T = L.
+
+        If include_geom=True:
+            Core Cφ = ∇²φ + f (n_i n_j) ∂i∂j φ + 2 f (n·∇φ)/r
+            Then L = -(1/(a H f)) C, and L^T y = -(1/(a H f)) C^T y with
+                C^T y = ∇² y + f ∂i∂j( (n_i n_j) y ) - 2 f ∇·( (y/r) n )
+        """
+        a, H, f = self.a, self.H, self.f
+        if not include_geom:
+            return self.apply_L_rsd_radial_fft(y, include_geom=False)
+
+        KX, KY, KZ, K2 = self.KX, self.KY, self.KZ, self.K2
+        nx, ny, nz = self._nhat
+        invR = self._invR
+
+        Yk  = np.fft.rfftn(y, s=y.shape)
+        lap = np.fft.irfftn(-K2 * Yk, s=y.shape).real
+
+        # f ∂i∂j( (n_i n_j) y )  via FFT on the product a_ij = (n_i n_j) y
+        a_xx = (nx*nx) * y;  Axx = np.fft.rfftn(a_xx, s=y.shape)
+        a_yy = (ny*ny) * y;  Ayy = np.fft.rfftn(a_yy, s=y.shape)
+        a_zz = (nz*nz) * y;  Azz = np.fft.rfftn(a_zz, s=y.shape)
+        a_xy = (nx*ny) * y;  Axy = np.fft.rfftn(a_xy, s=y.shape)
+        a_xz = (nx*nz) * y;  Axz = np.fft.rfftn(a_xz, s=y.shape)
+        a_yz = (ny*nz) * y;  Ayz = np.fft.rfftn(a_yz, s=y.shape)
+
+        d2_xx = np.fft.irfftn(-(KX*KX) * Axx, s=y.shape).real
+        d2_yy = np.fft.irfftn(-(KY*KY) * Ayy, s=y.shape).real
+        d2_zz = np.fft.irfftn(-(KZ*KZ) * Azz, s=y.shape).real
+        d2_xy = np.fft.irfftn(-(KX*KY) * Axy, s=y.shape).real
+        d2_xz = np.fft.irfftn(-(KX*KZ) * Axz, s=y.shape).real
+        d2_yz = np.fft.irfftn(-(KY*KZ) * Ayz, s=y.shape).real
+
+        term2 = f * (d2_xx + d2_yy + d2_zz + 2*d2_xy + 2*d2_xz + 2*d2_yz)
+
+        # - 2 f ∇·( (y/r) n )  via FFT divergence
+        qx = (y * nx) * invR; QX = np.fft.rfftn(qx, s=y.shape)
+        qy = (y * ny) * invR; QY = np.fft.rfftn(qy, s=y.shape)
+        qz = (y * nz) * invR; QZ = np.fft.rfftn(qz, s=y.shape)
+
+        div_q = np.fft.irfftn(1j*KX*QX + 1j*KY*QY + 1j*KZ*QZ, s=y.shape).real
+        term3 = -2.0 * f * div_q
+
+        coreT = lap + term2 + term3
+        return -coreT / (a*H*f + 1e-30)
+
+
+
+    # ========= NEW: radial RSD apply (real-space stencil) =========
+    def apply_L_rsd_radial_stencil(self, phi, include_geom=False):
+        """
+        4th-order stencil version of the radial RSD operator:
+            δ_s = -(∇²φ + f ∂_n^2 φ)/(a H f)        [linear radial RSD]
+        with optional geometric correction (include_geom=True):
+            δ_s = -(∇²φ + f ∂_n^2 φ - 2 f v_r / r)/(a H f)
+        where v_r = -∂_n φ and ∂_n = n_x ∂_x + n_y ∂_y + n_z ∂_z.
+
+        Requires self._nhat = (nx, ny, nz) and self._invR = 1/r arrays
+        defined on the same cell-centre grid as `phi`.
+        """
+        a, H, f = self.a, self.H, self.f
+        dx = self._dx
+
+        # 4th-order second derivatives (diagonal Hessian terms)
+        Hxx = d2_4(phi, 0, dx)
+        Hyy = d2_4(phi, 1, dx)
+        Hzz = d2_4(phi, 2, dx)
+
+        # Laplacian (4th-order)
+        lap = Hxx + Hyy + Hzz
+
+        # 4th-order mixed Hessian terms
+        Hxy = d2_mixed_4(phi, 0, 1, dx)
+        Hxz = d2_mixed_4(phi, 0, 2, dx)
+        Hyz = d2_mixed_4(phi, 1, 2, dx)
+
+        # Contract with n_i n_j
+        nx, ny, nz = self._nhat
+        dnn = (nx*nx)*Hxx + (ny*ny)*Hyy + (nz*nz)*Hzz \
+            + 2.0*(nx*ny)*Hxy + 2.0*(nx*nz)*Hxz + 2.0*(ny*nz)*Hyz
+
+        # Base linear mapping
+        inner = lap + f * dnn
+
+        if include_geom:
+            # geometric correction: - 2 f v_r / r
+            # v_r = -∂_n φ with 4th-order first derivatives
+            phi_x = d1_4(phi, 0, dx)
+            phi_y = d1_4(phi, 1, dx)
+            phi_z = d1_4(phi, 2, dx)
+            vr = -(nx*phi_x + ny*phi_y + nz*phi_z)          # v_r = -∂_n φ
+            inner = inner - 2.0 * f * vr * self._invR       # subtract inside bracket
+
+        return -inner / (a*H*f + 1e-30)
+
+    def apply_Lt_rsd_radial_stencil(self, y, include_geom=False):
+        """
+        4th-order real-space adjoint under periodic BCs.
+
+        include_geom=False ⇒ self-adjoint, so reuse forward.
+        include_geom=True  ⇒ C^T y = ∇² y + f ∂i∂j((n_i n_j) y) - 2 f ∇·((y/r) n).
+        """
+        a, H, f = self.a, self.H, self.f
+        dx = self._dx
+        if not include_geom:
+            return self.apply_L_rsd_radial_stencil(y, include_geom=False)
+
+        nx, ny, nz = self._nhat
+        invR = self._invR
+
+        # Laplacian (4th-order)
+        Hxx = d2_4(y, 0, dx); Hyy = d2_4(y, 1, dx); Hzz = d2_4(y, 2, dx)
+        lap = Hxx + Hyy + Hzz
+
+        # f ∂i∂j( (n_i n_j) y )
+        d2_xx = d2_4((nx*nx)*y, 0, dx)
+        d2_yy = d2_4((ny*ny)*y, 1, dx)
+        d2_zz = d2_4((nz*nz)*y, 2, dx)
+        d2_xy = d2_mixed_4((nx*ny)*y, 0, 1, dx)
+        d2_xz = d2_mixed_4((nx*nz)*y, 0, 2, dx)
+        d2_yz = d2_mixed_4((ny*nz)*y, 1, 2, dx)
+        term2 = f * (d2_xx + d2_yy + d2_zz + 2*d2_xy + 2*d2_xz + 2*d2_yz)
+
+        # - 2 f ∇·( (y/r) n )  with 4th-order divergence
+        qx = (y * nx) * invR
+        qy = (y * ny) * invR
+        qz = (y * nz) * invR
+        div_q = d1_4(qx, 0, dx) + d1_4(qy, 1, dx) + d1_4(qz, 2, dx)
+        term3 = -2.0 * f * div_q
+
+        coreT = lap + term2 + term3
+        return -coreT / (a*H*f + 1e-30)
+
+#############################################
 # -----------------------
 # CG / PCG implementation
 # -----------------------
@@ -202,6 +377,62 @@ def _make_Wx(sigma_x, M=None, eps=0.0):
     if M is not None:
         Wx = np.asarray(M, dtype=float) * Wx
     return Wx
+
+# -----------------------
+# Build matvecs (A·x) & RHS for radial–RSD (spectral L)
+# -----------------------
+def make_matvec_and_rhs_radial_rsd_spectral(
+    ops: "Operators", b_bias, sigma_x, d, M=None, eps=0.0, include_geom=False
+):
+    """
+    A x = S^{-1}_phi x + b^2 L^T W L x
+    rhs = b L^T W d
+    L is the *radial* RSD operator (FFT branch). If include_geom=True,
+    uses the true adjoint L^T; else L^T=L.
+    """
+    W_x = _make_Wx(sigma_x, M, eps)
+
+    def apply_A(x):
+        y_prior = ops.apply_Sphi_inv_fft(x)
+        yL      = ops.apply_L_rsd_radial_fft(x, include_geom=include_geom)
+        WyL     = W_x * yL
+        LtWL    = (ops.apply_Lt_rsd_radial_fft(WyL, include_geom=include_geom)
+                   if include_geom else
+                   ops.apply_L_rsd_radial_fft(WyL, include_geom=False))
+        return y_prior + (b_bias**2) * LtWL
+
+    rhs_core = W_x * d
+    rhs = b_bias * (ops.apply_Lt_rsd_radial_fft(rhs_core, include_geom=include_geom)
+                    if include_geom else
+                    ops.apply_L_rsd_radial_fft(rhs_core, include_geom=False))
+    return apply_A, rhs
+
+# -----------------------
+# Build matvecs (A·x) & RHS for radial–RSD (stencil L)
+# -----------------------
+def make_matvec_and_rhs_radial_rsd_stencil(
+    ops: "Operators", b_bias, sigma_x, d, M=None, eps=0.0, include_geom=False
+):
+    """
+    Same as above, but 4th-order real-space stencil branch.
+    """
+    W_x = _make_Wx(sigma_x, M, eps)
+
+    def apply_A(x):
+        y_prior = ops.apply_Sphi_inv_stencil(x)
+        yL      = ops.apply_L_rsd_radial_stencil(x, include_geom=include_geom)
+        WyL     = W_x * yL
+        LtWL    = (ops.apply_Lt_rsd_radial_stencil(WyL, include_geom=include_geom)
+                   if include_geom else
+                   ops.apply_L_rsd_radial_stencil(WyL, include_geom=False))
+        return y_prior + (b_bias**2) * LtWL
+
+    rhs_core = W_x * d
+    rhs = b_bias * (ops.apply_Lt_rsd_radial_stencil(rhs_core, include_geom=include_geom)
+                    if include_geom else
+                    ops.apply_L_rsd_radial_stencil(rhs_core, include_geom=False))
+    return apply_A, rhs
+
 
 # -----------------------
 # Build matvecs (A·x) & RHS for PP–RSD (spectral L)
@@ -469,7 +700,7 @@ def Constrained_realization_real_space_stencils(
     return phi_cr
 
 
-################################z rsd solver ####################################
+################################ pp rsd solver ####################################
 # --- Wiener mean (z rsd, spectral L) ---
 def Wiener_solve_pp_rsd_fft(
     ops_fft: Operators,
@@ -645,3 +876,6 @@ def Constrained_realization_pp_rsd_stencils(
 
     # 4) constrained realization
     return phi_rand + phi_corr
+
+
+############################## radial rsd solver #############################################

@@ -1134,3 +1134,30 @@ def radial_linear_rsd_highorder(
         periodic=periodic, pad=pad, pad_mode=pad_mode
     )
     return delta - (1.0/(a*H)) * div_rad
+
+
+
+def d1_4(u, axis, dx):
+    """
+    4th-order central first derivative along `axis`.
+    ( -u_{i+2} + 8 u_{i+1} - 8 u_{i-1} + u_{i-2} ) / (12 dx)
+    """
+    return ( -np.roll(u, -2, axis) + 8*np.roll(u, -1, axis)
+             - 8*np.roll(u, +1, axis) + np.roll(u, +2, axis) ) / (12.0*dx)
+
+def d2_4(u, axis, dx):
+    """
+    4th-order central second derivative along `axis`.
+    ( -u_{i+2} + 16 u_{i+1} - 30 u_i + 16 u_{i-1} - u_{i-2} ) / (12 dx^2)
+    """
+    return ( -np.roll(u, +2, axis) + 16*np.roll(u, +1, axis)
+             - 30.0*u
+             + 16*np.roll(u, -1, axis) - np.roll(u, -2, axis) ) / (12.0*dx*dx)
+
+def d2_mixed_4(u, ax1, ax2, dx):
+    """
+    4th-order mixed derivative ∂_{ax1}∂_{ax2} via
+    tensor-product 4th-order first derivatives:
+        ∂_{ax1}∂_{ax2} u ≈ d1_4(d1_4(u, ax1), ax2)
+    """
+    return d1_4(d1_4(u, ax1, dx), ax2, dx)
