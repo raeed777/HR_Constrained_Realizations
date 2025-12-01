@@ -1,13 +1,16 @@
 import numpy as np
 from Box import Box
 from Cosmology import Cosmology
-from helper_tools import kgrid_rfft3d, Pphi_from_Pdelta
+from helper_tools import kgrid_rfft3d, Pphi_from_Pdelta, los_unit_and_radius
 import pickle, time
 
 
 
 class Operators:
-    def __init__(self, box: Box, cosmo: Cosmology, Pdelta_callable, use_lattice_in_fft=True):
+    def __init__(self, box: Box, cosmo: Cosmology, Pdelta_callable, use_lattice_in_fft=True,
+                 # new: observer setup for radial RSD
+                 radial_observer_offset_L=5.0,  # observer at center - offset*L * los_dir
+                 radial_los_dir="z"):          # or a 3-vector):
         a, H, f= cosmo.a, cosmo.H, cosmo.f
         self.box = box
         self.a, self.H, self.f = a, H, f
@@ -50,6 +53,9 @@ class Operators:
         self.Lk_real[0,0,0] = 0.0
         self.Lk_pp[0,0,0]   = 0.0
 
+        # Real-space stencil needs dx
+        self._dx = dx
+
         # Stencil-consistent Pφ (k̃): use in stencil preconditioner if desired
         KT2_safe = np.maximum(self.KT2, 1e-30)
         self.Pphi_lat = (a * H * f) ** 2 * self.Pdelta / (KT2_safe ** 2)
@@ -64,8 +70,27 @@ class Operators:
         else:
             self.Lk = -(self.K2 + f * (self.KZ**2)) / max(a*H*f, 1e-30)
 
-        # Real-space stencil needs dx
-        self._dx = dx
+        # --- Radial geometry (use EXACT same helper you used to generate RSD) ---
+        def _as_dir(dspec):
+            if isinstance(dspec, str):
+                return dict(x=np.array([1,0,0.], float),
+                            y=np.array([0,1,0.], float),
+                            z=np.array([0,0,1.], float))[dspec.lower()]
+            v = np.asarray(dspec, float)
+            return v / np.linalg.norm(v)
+
+        # choose LOS base direction and observer position
+        los_dir_vec = _as_dir(radial_los_dir)  # e.g., "z" or a 3-vector
+        center = np.array([box.L/2, box.L/2, box.L/2], float)
+        observer_xyz = center - radial_observer_offset_L * box.L * los_dir_vec
+
+        # use the SAME routine as in your RSD generator
+        nx, ny, nz, r = los_unit_and_radius(box, observer_xyz, periodic=False, pad=0)
+
+        # store unit LOS and (optional) 1/r (single precision is fine)
+        self._nhat = (nx.astype(np.float32), ny.astype(np.float32), nz.astype(np.float32))
+        self._invR = (1.0 / np.maximum(r, 1e-30)).astype(np.float32)
+
 
 
     # ----- prior terms -----
