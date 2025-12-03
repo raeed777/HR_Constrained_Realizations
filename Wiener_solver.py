@@ -85,7 +85,7 @@ class Operators:
         observer_xyz = center - radial_observer_offset_L * box.L * los_dir_vec
 
         # use the SAME routine as in your RSD generator
-        nx, ny, nz, r = los_unit_and_radius(box, observer_xyz, periodic=False, pad=0)
+        nx, ny, nz, r = los_unit_and_radius(box, observer_xyz, periodic=True, pad=0)
 
         # store unit LOS and (optional) 1/r (single precision is fine)
         self._nhat = (nx.astype(np.float32), ny.astype(np.float32), nz.astype(np.float32))

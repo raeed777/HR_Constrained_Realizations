@@ -13,13 +13,13 @@ from pspectra_camb import build_camb_pk_callable
 class Data:
     box: Box
     cosmology: Cosmology
-    delta_r: Optional[np.ndarray] = field(default=None, repr=False)
-    phi_fft: Optional[np.ndarray]     = field(default=None, repr=False)
-    phi_sten: Optional[np.ndarray]     = field(default=None, repr=False)
-    v_fft: Optional[np.ndarray]     = field(default=None, repr=False)
+    delta_r: Optional[np.ndarray]    = field(default=None, repr=False)
+    phi_fft: Optional[np.ndarray]    = field(default=None, repr=False)
+    phi_sten: Optional[np.ndarray]   = field(default=None, repr=False)
+    v_fft: Optional[np.ndarray]      = field(default=None, repr=False)
     v_sten: Optional[np.ndarray]     = field(default=None, repr=False)
-    delta_s_z: Optional[np.ndarray] = field(default=None, repr=False)
-    delta_s_r: Optional[np.ndarray] = field(default=None, repr=False)
+    delta_s_z: Optional[np.ndarray]  = field(default=None, repr=False)
+    delta_s_r: Optional[np.ndarray]  = field(default=None, repr=False)
     
     def sample_delta_from_Pk(self, rng=None, Pk_callable=None):
         if rng is None:
@@ -120,7 +120,6 @@ class Data:
         vz_s = -d_forward(self.phi_sten, axis=2, h=dx)
         self.v_sten = np.stack([vx_s, vy_s, vz_s], axis=0)
 
-
     def calc_lin_z_rsd_delta(self):
         a, H = self.cosmology.a, self.cosmology.H
         dx = self.box.dx
@@ -134,6 +133,7 @@ class Data:
         obs_y = 0
         obs_z = -1 * distance * self.box.L
         obs_xyz = [obs_x, obs_y, obs_z]
+        #print("the observer coordinates are: ", obs_xyz)
         a = self.cosmology.a
         H = self.cosmology.H
         self.delta_s_r = radial_linear_rsd_highorder(self.delta_r, self.v_fft, self.box, a, H, obs_xyz)

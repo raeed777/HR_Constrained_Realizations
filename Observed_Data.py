@@ -17,10 +17,11 @@ class ObservedData(Data):
       - W: weights = mask / sigma^2
     """
     mask: Optional[Array] = field(default=None, repr=False)     # 0/1 or fractional weights in [0,1]
-    noise: Optional[Array] = field(default=None, repr=False)   # noise
-    sigma_noise: float = 0.0
     b_bias: float = 1.0
     dataset: Literal["real", "pp", "radial"] = "real"                     # "real" or plane-parallel "pp"
+    noise: Optional[Array] = field(default=None, repr=False)   # noise
+    sigma_noise: float = 0.0
+    
 
     # Outputs
     d: Optional[Array] = field(default=None, repr=False)
