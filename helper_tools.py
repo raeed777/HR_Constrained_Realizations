@@ -1161,3 +1161,32 @@ def d2_mixed_4(u, ax1, ax2, dx):
         ∂_{ax1}∂_{ax2} u ≈ d1_4(d1_4(u, ax1), ax2)
     """
     return d1_4(d1_4(u, ax1, dx), ax2, dx)
+
+
+
+
+def compare_to_truth(true, rec, name="rec", mask=None):
+    """
+    Compute residual metrics between a reconstruction and the true field.
+    If mask is provided (0/1 or boolean), metrics are computed only where mask==1.
+    """
+    t = true
+    r = rec
+    if mask is not None:
+        m = np.asarray(mask, dtype=bool)
+        t = t[m]
+        r = r[m]
+
+    res = r - t
+    l2_rel = np.linalg.norm(res.ravel()) / (np.linalg.norm(t.ravel()) + 1e-30)
+    rmse   = np.sqrt(np.mean(res**2))
+    mae    = np.mean(np.abs(res))
+    bias   = np.mean(res)
+    # correlation (Pearson)
+    t0 = t - t.mean()
+    r0 = r - r.mean()
+    corr = (np.dot(t0.ravel(), r0.ravel()) /
+            (np.linalg.norm(t0.ravel()) * np.linalg.norm(r0.ravel()) + 1e-30))
+
+    print(f"[{name}]  L2_rel={l2_rel:.4e}  RMSE={rmse:.4e}  MAE={mae:.4e}  Bias={bias:.4e}  Corr={corr:.6f}")
+    return dict(L2_rel=l2_rel, RMSE=rmse, MAE=mae, Bias=bias, Corr=corr)
