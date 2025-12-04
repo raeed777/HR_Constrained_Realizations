@@ -1130,14 +1130,48 @@ def radial_linear_rsd_highorder(
 
     - `method="flux4"`: conservative divergence of n(n·v) (captures geometric terms).
     - `method="identity4"`: uses \hat r\hat r:∇v + (2/r) v_r explicitly.
+    - `periodic`: forwarded to the divergence calculator to choose between
+      periodic stencils or padding-based boundary handling. Set this True only
+      when the forward model also assumed periodicity; otherwise prefer
+      padding so the geometric 2/r term near an internal observer does not
+      wrap across the box edges.
     """
     div_rad = divergence_of_radial_flux_highorder(
         v, box, observer_xyz, method=method,
-        periodic=True, pad=pad, pad_mode=pad_mode
+        periodic=periodic, pad=pad, pad_mode=pad_mode
     )
     return delta - (1.0/(a*H)) * div_rad
 
+def radial_rsd_diagnostics(
+    v, box, observer_xyz,
+    *, periodic=False, pad=2, pad_mode="reflect"
+):
+    """
+    Cross-check the two radial RSD divergence forms on the same inputs.
 
+    Returns a dict with L2, relative L2, and max-abs disagreement between
+    ``∇·[n(n·v)]`` computed via the conservative flux form (``flux4``) and the
+    explicit identity (``identity4``). Near-zero residuals indicate the LOS
+    geometry, geometric (2/r) term, and boundary handling are consistent, so the
+    downstream ``radial_linear_rsd_highorder`` output is mathematically sound.
+    """
+    flux = divergence_of_radial_flux_highorder(
+        v, box, observer_xyz,
+        method="flux4", periodic=periodic, pad=pad, pad_mode=pad_mode,
+    )
+    ident = divergence_of_radial_flux_highorder(
+        v, box, observer_xyz,
+        method="identity4", periodic=periodic, pad=pad, pad_mode=pad_mode,
+    )
+
+    diff = flux - ident
+    l2 = np.linalg.norm(diff.ravel())
+    norm = np.linalg.norm(flux.ravel()) + 1e-30
+    return {
+        "l2": l2,
+        "rel_l2": l2 / norm,
+        "max_abs": float(np.max(np.abs(diff))),
+    }
 
 def d1_4(u, axis, dx):
     """

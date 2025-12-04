@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import numpy as np
-from helper_tools import kgrid_rfft3d, rfft_multiplicity_last_axis, spectral_d_dz, make_triangular_rays_mask, cdiff4, grad4_scalar
+from helper_tools import kgrid_rfft3d, rfft_multiplicity_last_axis, spectral_d_dz, make_triangular_rays_mask, cdiff4, grad4_scalar, radial_rsd_diagnostics
 from helper_tools import  div4_vector, los_unit_and_radius, radial_divergence_flux4, radial_divergence_identity4, divergence_of_radial_flux_highorder, radial_linear_rsd_highorder
 from Box import Box
 from Cosmology import Cosmology
@@ -137,10 +137,13 @@ class Data:
         a = self.cosmology.a
         H = self.cosmology.H
         self.delta_s_r = radial_linear_rsd_highorder(self.delta_r, self.v_fft, self.box, a, H, obs_xyz)
+        output = radial_rsd_diagnostics(self.v_fft, self.box, obs_xyz)
+        print(output)
     
     def generate_mock_fields(self, distance = 0, rng=None, Pk_callable=None):
         self.sample_delta_from_Pk(rng, Pk_callable=Pk_callable)
         self.calc_phi()
         self.calc_lin_z_rsd_delta()
         self.calc_lin_r_rsd_delta(distance)
+
     
