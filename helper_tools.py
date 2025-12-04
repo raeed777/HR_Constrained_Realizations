@@ -109,6 +109,56 @@ def shell_power_rfft(field: np.ndarray, L: float, N: int,
     return k_centers, Pk
 
 
+def rsd_power_comparison(delta_real: np.ndarray, delta_rsd: np.ndarray,
+                         L: float, N: int,
+                         *, convention: str = "sampler"):
+    """
+    Compare real-space and RSD power spectra to gauge the RSD signal strength.
+
+    Parameters
+    ----------
+    delta_real : (n,n,n) array
+        Real-space overdensity field.
+    delta_rsd : (n,n,n) array
+        Redshift-space overdensity field built from the same realization.
+    L : float
+        Box side length [Mpc/h].
+    N : int
+        Number of k-shells for binning.
+    convention : {"sampler","weighted"}, default "sampler"
+        Forwarded to :func:`shell_power_rfft`.
+
+    Returns
+    -------
+    k : (N,) array
+        Shell-center wavenumbers [h/Mpc].
+    P_real : (N,) array
+        Real-space power spectrum [(Mpc/h)^3].
+    P_rsd : (N,) array
+        Redshift-space power spectrum [(Mpc/h)^3].
+    ratio : (N,) array
+        P_rsd / P_real where both are finite; ``nan`` otherwise.
+    deltaP : (N,) array
+        P_rsd - P_real difference per shell.
+    """
+    k_real, P_real, _ = shell_power_rfft(delta_real, L, N,
+                                         convention=convention,
+                                         return_counts=True)
+    k_rsd, P_rsd, _ = shell_power_rfft(delta_rsd, L, N,
+                                       convention=convention,
+                                       return_counts=True)
+
+    if not np.allclose(k_real, k_rsd):
+        raise ValueError("k-bin centers do not match between real and RSD spectra")
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ratio = np.where(np.isfinite(P_real) & (np.abs(P_real) > 0),
+                         P_rsd / P_real, np.nan)
+
+    deltaP = P_rsd - P_real
+    return k_real, P_real, P_rsd, ratio, deltaP
+
+
 def shell_power_rfft_stencil(field: np.ndarray, L: float, N: int,
                              convention: str = "sampler",
                              return_counts: bool = True):
@@ -989,7 +1039,8 @@ def los_unit_and_radius(box, observer_xyz, periodic=False, pad=0):
         X, Y, Z = np.meshgrid(ax, ax, ax, indexing="ij")
     else:
         Np = n + 2*pad
-        axp = (np.arange(Np) + 0.5) * dx
+        axp = (np.arange(Np) - pad + 0.5) * dx
+
         X, Y, Z = np.meshgrid(axp, axp, axp, indexing="ij")
 
     cx = cy = cz = 0.5 * L  # box center
