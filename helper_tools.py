@@ -983,6 +983,52 @@ def subcone_footprints_on_slice(debug, box, *,
 import numpy as np
 
 ################## tools for radial calculations for the rsd delta ###############################
+def L_rsd_radial_fft_operator(phi, a, H, f, box, radial_observer_offset_L, include_geom=True, radial_los_dir="z"):
+
+        KX, KY, KZ, K, K2 = kgrid_rfft3d(box)
+
+        Phik = np.fft.rfftn(phi, s=phi.shape)
+
+        # --- Radial geometry (use EXACT same helper you used to generate RSD) ---
+        def _as_dir(dspec):
+            if isinstance(dspec, str):
+                return dict(x=np.array([1,0,0.], float),
+                            y=np.array([0,1,0.], float),
+                            z=np.array([0,0,1.], float))[dspec.lower()]
+            v = np.asarray(dspec, float)
+            return v / np.linalg.norm(v)
+        los_dir_vec = _as_dir(radial_los_dir)  # e.g., "z" or a 3-vector
+        center = np.array([box.L/2, box.L/2, box.L/2], float)
+        observer_xyz = center - radial_observer_offset_L * box.L * los_dir_vec
+        # use the SAME routine as in your RSD generator
+        nx, ny, nz, r = los_unit_and_radius(box, observer_xyz, periodic=True, pad=0)
+
+        # store unit LOS and (optional) 1/r (single precision is fine)
+        _nhat = (nx.astype(np.float32), ny.astype(np.float32), nz.astype(np.float32))
+        _invR = (1.0 / np.maximum(r, 1e-30)).astype(np.float32)
+
+        lap = np.fft.irfftn(-K2 * Phik, s=phi.shape).real
+        Hxx = np.fft.irfftn(-(KX*KX) * Phik, s=phi.shape).real
+        Hyy = np.fft.irfftn(-(KY*KY) * Phik, s=phi.shape).real
+        Hzz = np.fft.irfftn(-(KZ*KZ) * Phik, s=phi.shape).real
+        Hxy = np.fft.irfftn(-(KX*KY) * Phik, s=phi.shape).real
+        Hxz = np.fft.irfftn(-(KX*KZ) * Phik, s=phi.shape).real
+        Hyz = np.fft.irfftn(-(KY*KZ) * Phik, s=phi.shape).real
+
+        nx, ny, nz = _nhat
+        dnn = (nx*nx)*Hxx + (ny*ny)*Hyy + (nz*nz)*Hzz + 2*(nx*ny)*Hxy + 2*(nx*nz)*Hxz + 2*(ny*nz)*Hyz
+
+        inner = lap + f * dnn
+
+        if include_geom:
+            # v_r = -∂_n φ computed spectrally
+            phi_x = np.fft.irfftn((1j*KX) * Phik, s=phi.shape).real
+            phi_y = np.fft.irfftn((1j*KY) * Phik, s=phi.shape).real
+            phi_z = np.fft.irfftn((1j*KZ) * Phik, s=phi.shape).real
+            vr = -(nx*phi_x + ny*phi_y + nz*phi_z)
+            inner = inner - 2.0 * f * vr * _invR
+
+        return inner / (a*H*f + 1e-30)
 
 
 # ========== Low-level 4th-order finite-difference ops ==========
@@ -1045,9 +1091,9 @@ def los_unit_and_radius(box, observer_xyz, periodic=False, pad=0):
 
     cx = cy = cz = 0.5 * L  # box center
     x0, y0, z0 = observer_xyz
-    x0 += cx
-    y0 += cy
-    z0 += cz
+    # x0 += cx
+    # y0 += cy
+    # z0 += cz
     RX = X - x0
     RY = Y - y0
     RZ = Z - z0
@@ -1111,7 +1157,7 @@ def radial_divergence_identity4(v, nx, ny, nz, r, dx, periodic=True):
 
 # ========== Wrapper: build-and-apply with padding or periodic BC ==========
 def divergence_of_radial_flux_highorder(
-    v, box, observer_xyz,
+    v, box, distance,
     *,
     method="flux4",        # "flux4" or "identity4"
     periodic=False,        # if False, we pad and return trimmed interior
@@ -1136,7 +1182,19 @@ def divergence_of_radial_flux_highorder(
       div_radial  : (n,n,n) array on the *original* box grid
     """
     n, dx = box.n, box.dx
+    # --- Radial geometry (use EXACT same helper you used to generate RSD) ---
+    def _as_dir(dspec):
+        if isinstance(dspec, str):
+            return dict(x=np.array([1,0,0.], float),
+                        y=np.array([0,1,0.], float),
+                        z=np.array([0,0,1.], float))[dspec.lower()]
+        v = np.asarray(dspec, float)
+        return v / np.linalg.norm(v)
 
+    # choose LOS base direction and observer position
+    los_dir_vec = _as_dir("z")  # e.g., "z" or a 3-vector
+    center = np.array([box.L/2, box.L/2, box.L/2], float)
+    observer_xyz = center - distance * box.L * los_dir_vec
     if periodic:
         nx, ny, nz, r = los_unit_and_radius(box, observer_xyz, periodic=True, pad=0)
         if method == "flux4":
@@ -1170,7 +1228,7 @@ def divergence_of_radial_flux_highorder(
 
 # ========== Example: radial linear RSD (δ_s = δ - (1/aH) ∇·[n(n·v)]) ==========
 def radial_linear_rsd_highorder(
-    delta, v, box, a, H, observer_xyz,
+    delta, v, box, a, H, distance,
     *,
     method="flux4", periodic=False, pad=2, pad_mode="reflect"
 ):
@@ -1188,7 +1246,7 @@ def radial_linear_rsd_highorder(
       wrap across the box edges.
     """
     div_rad = divergence_of_radial_flux_highorder(
-        v, box, observer_xyz, method=method,
+        v, box, distance, method=method,
         periodic=periodic, pad=pad, pad_mode=pad_mode
     )
     return delta - (1.0/(a*H)) * div_rad

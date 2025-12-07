@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import numpy as np
-from helper_tools import kgrid_rfft3d, rfft_multiplicity_last_axis, spectral_d_dz, make_triangular_rays_mask, cdiff4, grad4_scalar, radial_rsd_diagnostics
+from helper_tools import kgrid_rfft3d, rfft_multiplicity_last_axis, spectral_d_dz, make_triangular_rays_mask, cdiff4, grad4_scalar, radial_rsd_diagnostics, L_rsd_radial_fft_operator
 from helper_tools import  div4_vector, los_unit_and_radius, radial_divergence_flux4, radial_divergence_identity4, divergence_of_radial_flux_highorder, radial_linear_rsd_highorder
 from Box import Box
 from Cosmology import Cosmology
@@ -129,16 +129,18 @@ class Data:
         self.delta_s_z = self.delta_r - (1.0/(a*H)) * d_vz_dz
 
     def calc_lin_r_rsd_delta(self, distance):
-        obs_x = 0
-        obs_y = 0
-        obs_z = -1 * distance * self.box.L
+        obs_x = self.box.L / 2
+        obs_y = self.box.L / 2
+        obs_z = self.box.L / 2 - 1 * distance * self.box.L
         obs_xyz = [obs_x, obs_y, obs_z]
         #print("the observer coordinates are: ", obs_xyz)
         a = self.cosmology.a
         H = self.cosmology.H
-        self.delta_s_r = radial_linear_rsd_highorder(self.delta_r, self.v_fft, self.box, a, H, obs_xyz)
-        output = radial_rsd_diagnostics(self.v_fft, self.box, obs_xyz)
-        print(output)
+        f = self.cosmology.f
+        #self.delta_s_r = L_rsd_radial_fft_operator(self.phi_fft, a, H, f, self.box, distance, include_geom=True, radial_los_dir="z")
+        self.delta_s_r = radial_linear_rsd_highorder(self.delta_r, self.v_fft, self.box, a, H, distance)
+        #output = radial_rsd_diagnostics(self.v_fft, self.box, obs_xyz)
+        #print(output)
     
     def generate_mock_fields(self, distance = 0, rng=None, Pk_callable=None):
         self.sample_delta_from_Pk(rng, Pk_callable=Pk_callable)
