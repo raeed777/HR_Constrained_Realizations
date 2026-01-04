@@ -20,7 +20,8 @@ class Data:
     v_sten: Optional[np.ndarray]     = field(default=None, repr=False)
     delta_s_z: Optional[np.ndarray]  = field(default=None, repr=False)
     delta_s_r: Optional[np.ndarray]  = field(default=None, repr=False)
-    
+    psi: Optional[np.ndarray]        = field(default=None, repr=False)
+
     def sample_delta_from_Pk(self, rng=None, Pk_callable=None):
         if rng is None:
             rng = np.random.default_rng()
@@ -120,6 +121,74 @@ class Data:
         vz_s = -d_forward(self.phi_sten, axis=2, h=dx)
         self.v_sten = np.stack([vx_s, vy_s, vz_s], axis=0)
 
+    def calc_psi(self, Pk_callable=None):
+        """
+        Compute the whitened potential ψ such that, in Fourier space,
+            φ̂(k) = sqrt(P_φ(k)) ψ̂(k),
+        with
+            P_φ(k) = (a H f)^2 P_δ(k) / k^4.
+
+        Assumes:
+          - self.phi_fft is already filled with φ(x) from calc_phi()
+          - same cosmology as used to build P_δ
+        Stores:
+          - self.psi : ψ(x) in real space
+        """
+        if self.phi_fft is None:
+            raise ValueError("phi_fft is None. Run calc_phi() first.")
+
+        box = self.box
+        cosmo = self.cosmology
+        a, H, f = cosmo.a, cosmo.H, cosmo.f
+        n = box.n
+
+        # --- k-grid and |k|^2 ---
+        KX, KY, KZ, K, K2 = kgrid_rfft3d(box)
+
+        # --- If no P(k) callable provided, build one as in sample_delta_from_Pk ---
+        if Pk_callable is None:
+            Om = getattr(cosmo, "Om", 0.315)
+            Ob = getattr(cosmo, "Ob", 0.049)
+            h  = getattr(cosmo, "h",  0.674)
+            ns = getattr(cosmo, "ns", 0.965)
+            s8 = getattr(cosmo, "sigma8", 0.811)
+            print("calc_psi: building Pk_callable from CAMB")
+            kmax_h = float(K.max()) * 1.1
+            Pk_callable, _ = build_camb_pk_callable(
+                Om=Om, Ob=Ob, h=h, ns=ns,
+                sigma8_target=s8,
+                z=0.0,
+                kmax_h=kmax_h,
+                nonlinear=False
+            )
+
+        # --- Matter power on the rFFT grid ---
+        P_delta = Pk_callable(K)   # (Mpc/h)^3, same shape as K
+
+        # --- φ power spectrum on the grid: P_φ(k) = (aHf)^2 P_δ / k^4 ---
+        P_phi = np.zeros_like(P_delta, dtype=float)
+        # avoid k=0 blow-up
+        mask = (K2 > 0)
+        P_phi[mask] = (a*H*f)**2 * P_delta[mask] / (K2[mask]**2)
+
+        # --- φ̂(k) from φ(x) ---
+        phik = np.fft.rfftn(self.phi_fft, s=(n, n, n))
+
+        # --- Whiten: ψ̂ = φ̂ / sqrt(P_φ) ---
+        sqrt_Pphi = np.zeros_like(P_phi, dtype=float)
+        np.sqrt(P_phi, out=sqrt_Pphi, where=(P_phi > 0))
+
+        psik = np.zeros_like(phik, dtype=complex)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            psik = np.where(sqrt_Pphi > 0, phik / sqrt_Pphi, 0.0)
+
+        # Enforce zero DC mode for safety
+        psik[0, 0, 0] = 0.0
+
+        # --- Back to real space: ψ(x) ---
+        self.psi = np.fft.irfftn(psik, s=(n, n, n)).real
+
+
     def calc_lin_z_rsd_delta(self):
         a, H = self.cosmology.a, self.cosmology.H
         dx = self.box.dx
@@ -143,6 +212,7 @@ class Data:
     def generate_mock_fields(self, distance = 0, rng=None, Pk_callable=None):
         self.sample_delta_from_Pk(rng, Pk_callable=Pk_callable)
         self.calc_phi()
+        self.calc_psi()
         self.calc_lin_z_rsd_delta()
         self.calc_lin_r_rsd_delta(distance)
 

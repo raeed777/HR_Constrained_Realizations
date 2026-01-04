@@ -34,7 +34,7 @@ class ObservedData(Data):
             assert self.mask.shape == (n, n, n), "mask must be (n,n,n)"
             self.mask = self.mask.astype(float)
 
-    def generate_artificial_noise(self, sigma_frac=0.2, jitter_frac=0.0):
+    def generate_artificial_noise(self, sigma_frac=0.2, jitter_frac=0.0, rng=None):
         if self.dataset == "real":
             obs_field = self.delta_r
         elif self.dataset == "pp":
@@ -43,7 +43,8 @@ class ObservedData(Data):
             obs_field = self.delta_s_r
         else:
             print("choose the correct type!")
-        rng = np.random.default_rng(42)
+        if rng is None:
+            rng = np.random.default_rng(42)
         n = obs_field.shape[0]
 
         base = float(obs_field.std()) if obs_field.std() > 0 else 1.0
@@ -66,7 +67,11 @@ class ObservedData(Data):
         else:
             print("choose the correct data type!!")
 
-        M = np.ones_like(field, dtype=np.float64) if self.mask is None else self.mask.astype(np.float64)
+        M = np.ones_like(obs_field, dtype=np.float64) if self.mask is None \
+            else self.mask.astype(np.float64)
+
+        if self.noise is None:
+            raise ValueError("Noise not generated. Call generate_artificial_noise() first.")
 
         self.d = M * (self.b_bias * obs_field + self.noise)     # outside mask this is 0 (and solver will set W=0 there)
 
