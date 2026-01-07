@@ -3,8 +3,8 @@ import camb
 
 
 def build_camb_pk_callable(
-    Om=0.315, Ob=0.049, h=0.674, ns=0.965,
-    sigma8_target=0.811,           # set None to use As instead
+    Om=0.3111, Ob=0.0490, h=0.6766, ns=0.9665,
+    sigma8_target=0.8102,           # set None to use As instead
     As=None,                       # only used if sigma8_target is None
     z=0.0,                         # redshift for P(k,z)
     kmax_h=10.0,                   # max k in h/Mpc for the interpolator
