@@ -149,6 +149,48 @@ class Obs_Geometry:
         f_flat = _growth_rate(col, z_flat)
         self.f_grid = f_flat.reshape(self.r_grid.shape)
 
+    def compute_Dphi_grid(self):
+        """
+        Build the grid of velocity–potential growth factors D_φ(r) from the
+        density growth grid D_δ(r) using
+
+            D_φ(z) = [a(z) H(z) f(z) / (a0 H0 f0)] * D_δ(z),
+
+        with the same normalization convention as D_δ:
+            D_δ(z_ref) = 1  ⇒  D_φ(z_ref) = 1.
+        """
+        if self.z_grid is None:
+            raise ValueError("z_grid not set. Call compute_z_grid() first.")
+        if self.D_grid is None:
+            raise ValueError("D_grid not set. Call compute_D_grid() first.")
+        if self.f_grid is None:
+            raise ValueError("f_grid not set. Call compute_f_grid() first.")
+
+        # Colossus cosmology currently in use (global)
+        col = col_cosmo.getCurrent()
+
+        z   = np.asarray(self.z_grid, float)   # shape (n,n,n)
+        Dδ  = np.asarray(self.D_grid, float)   # D_δ(z) / D_δ(z_ref)
+        f_z = np.asarray(self.f_grid, float)   # f(z)
+
+        # a(z) and H(z)
+        a_z = 1.0 / (1.0 + z)
+        H_z = col.Hz(z)                        # vectorized in Colossus
+
+        # reference values at z_ref
+        z0 = float(self.z_ref)
+        a0 = 1.0 / (1.0 + z0)
+        H0 = col.Hz(z0)
+        f0 = _growth_rate(col, z0)              # your f(z) ≈ Ω_m(z)^γ
+
+        # ratio R(z) = (a H f) / (a0 H0 f0)
+        eps = 1e-30
+        R_z = (a_z * H_z * f_z) / (a0 * H0 * f0 + eps)
+
+        # final D_φ grid, normalized so D_φ(z_ref) = 1
+        self.Dphi_grid = R_z * Dδ
+
+
     # ------------------ Convenience wrapper ------------------ #
     def initialize(self, z_max=4.0, Nz=2048):
         """
@@ -158,3 +200,4 @@ class Obs_Geometry:
         self.compute_z_grid(z_max=z_max, Nz=Nz)
         self.compute_D_grid(z_max=z_max, Nz=Nz)
         self.compute_f_grid(z_max=z_max, Nz=Nz)
+        self.compute_Dphi_grid()
