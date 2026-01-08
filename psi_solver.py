@@ -1,6 +1,7 @@
 import numpy as np
 from Box import Box
 from Cosmology import Cosmology
+from Obs_Geometry import Obs_Geometry
 from helper_tools import kgrid_rfft3d, Pphi_from_Pdelta, los_unit_and_radius
 import pickle, time, copy
 
@@ -13,10 +14,14 @@ class Operators:
       - defines spectral φ→δ and φ→δ_s (PP) symbols
     """
 
-    def __init__(self, box: Box, cosmo: Cosmology, Pdelta_callable,
-                 # radial RSD geometry
-                 radial_observer_offset_L=5.0,   # observer at center - offset*L * los_dir
-                 radial_los_dir="z"):           # or a 3-vector
+    from Obs_Geometry import Obs_Geometry
+
+class Operators:
+    def __init__(self,
+                 box: Box,
+                 cosmo: Cosmology,
+                 Pdelta_callable,
+                 obs_geometry: Obs_Geometry):
         a, H, f = cosmo.a, cosmo.H, cosmo.f
         self.box = box
         self.cosmology = cosmo
@@ -49,36 +54,29 @@ class Operators:
         self.Sphi_sqrt_inv_k[0, 0, 0] = 0.0
 
         # --- φ -> δ and φ -> δ_s (PP) symbols, purely spectral ---
-        # real-space density: δ = -(k^2/(a H f)) φ
         self.Lk_real = -(self.K2) / (a * H * f + 1e-30)
         self.Lk_real[0, 0, 0] = 0.0
 
-        # plane-parallel RSD along z: δ_s = -(k^2 + f k_z^2)/(a H f) φ
         self.Lk_pp = -(self.K2 + f * (self.KZ**2)) / (a * H * f + 1e-30)
         self.Lk_pp[0, 0, 0] = 0.0
 
-        # --- Radial geometry (same helper as in your RSD generator) ---
-        def _as_dir(dspec):
-            if isinstance(dspec, str):
-                return dict(
-                    x=np.array([1, 0, 0.], float),
-                    y=np.array([0, 1, 0.], float),
-                    z=np.array([0, 0, 1.], float),
-                )[dspec.lower()]
-            v = np.asarray(dspec, float)
-            return v / np.linalg.norm(v)
+        # --- Attach observation geometry (n̂, r, Dφ, maybe z) ---
+        self.obs_geometry = obs_geometry
 
-        los_dir_vec = _as_dir(radial_los_dir)  # e.g., "z" or a 3-vector
-        center = np.array([box.L/2, box.L/2, box.L/2], float)
-        observer_xyz = center - radial_observer_offset_L * box.L * los_dir_vec
+        # LOS unit vector n̂ and 1/r
+        self._nhat = obs_geometry.nhat_grid          # typically a tuple (nx, ny, nz)
+        self._invR = (1.0 / np.maximum(obs_geometry.r_grid, 1e-30)).astype(np.float32)
 
-        nx, ny, nz, r = los_unit_and_radius(box, observer_xyz, periodic=True, pad=0)
+        # Growth of the velocity potential on the grid
+        if getattr(obs_geometry, "Dphi_grid", None) is None:
+            raise ValueError("obs_geometry.Dphi_grid is None. "
+                             "Call obs_geometry.compute_D_grid() and "
+                             "obs_geometry.compute_Dphi_grid() first.")
+        self.Dphi_grid = np.asarray(obs_geometry.Dphi_grid, dtype=float)
 
-        # Store LOS unit vector and 1/r on the grid
-        self._nhat = (nx.astype(np.float32),
-                      ny.astype(np.float32),
-                      nz.astype(np.float32))
-        self._invR = (1.0 / np.maximum(r, 1e-30)).astype(np.float32)
+        # (optional) keep z_grid if you want it later
+        self.z_grid = getattr(obs_geometry, "z_grid", None)
+
 
     # ---------- Prior operators in Fourier space ----------
 
@@ -134,6 +132,29 @@ class Operators:
         Delta_s_k = self.Lk_pp * Phi_k
         return np.fft.irfftn(Delta_s_k, s=phi.shape).real
 
+    # ========= Growth operator in φ-space =========
+    def apply_Dphi(self, u):
+        """
+        Apply the velocity-potential growth factor D_φ(x) in real space:
+            (D_φ u)(x) = D_φ(x) * u(x).
+
+        Assumes Obs_Geometry has been attached and Dphi_grid initialized.
+        """
+        if self.Dphi_grid is None:
+            raise ValueError("Dphi_grid is not set on Operators. "
+                             "Attach Obs_Geometry and call compute_Dphi_grid().")
+        Dφ = self.Dphi_grid
+        # Broadcasting-safe: ensure same shape
+        if Dφ.shape != u.shape:
+            raise ValueError(f"Dphi_grid shape {Dφ.shape} does not match input {u.shape}")
+        return Dφ * u
+
+    def apply_Dphi_T(self, u):
+        """
+        Adjoint of D_φ under the standard real inner product.
+        For real, diagonal D_φ this is identical to apply_Dphi.
+        """
+        return self.apply_Dphi(u)
 
 
     # ========= NEW: radial RSD apply (hybrid spectral) =========
@@ -443,8 +464,8 @@ def make_matvec_and_rhs_psi_radial_fft(
         LtWd = ops.apply_Lt_rsd_radial_fft(rhs_core, include_geom=True)
     else:
         LtWd = ops.apply_L_rsd_radial_fft(rhs_core, include_geom=False)
-
-    rhs = b_bias * ops.apply_Sphi_sqrt_fft(LtWd)
+    DphiLtWd = ops.apply_Dphi(LtWd)
+    rhs = b_bias * ops.apply_Sphi_sqrt_fft(DphiLtWd)
 
     return apply_A, rhs
 
