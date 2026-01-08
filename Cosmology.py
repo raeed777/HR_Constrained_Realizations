@@ -13,13 +13,13 @@ class Cosmology:
     A: float     # here: we'll store sigma8 for convenience
 
 
-def make_planck15_cosmology(z: float = 0.0) -> Cosmology:
+def make_planck18_cosmology(z: float = 0.0) -> Cosmology:
     """
     Build a Cosmology instance using the Colossus 'planck15' cosmology,
     evaluated at redshift z.
     """
     # 1) Set global cosmology in Colossus
-    col = col_cosmo.setCosmology('planck15')
+    col = col_cosmo.setCosmology('planck18')
 
     # 2) Background quantities at this z
     a = 1.0 / (1.0 + z)
@@ -47,3 +47,25 @@ def make_planck15_cosmology(z: float = 0.0) -> Cosmology:
         ns=ns,
         A=A,
     )
+
+
+def growth_factor(col, z, z_norm=0.0):
+    """
+    Return D(z) normalized to D(z_norm=0) = 1.
+    col is the Colossus Cosmology object.
+    """
+
+    D_znorm = col.growthFactor(z_norm)
+    D_z = col.growthFactor(z)
+    return D_z / D_znorm
+
+
+def growth_rate(col, z, z_norm=0.0):
+    """
+    Return f(z) normalized to f(z->infinity) = 1.
+    col is the Colossus Cosmology object.
+    """
+    Omega_m = col.Om(z)
+    gamma = 0.545
+    f = Omega_m**gamma
+    return f

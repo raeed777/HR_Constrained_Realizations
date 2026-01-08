@@ -21,7 +21,7 @@ class Data:
     delta_s_z: Optional[np.ndarray]  = field(default=None, repr=False)
     delta_s_r: Optional[np.ndarray]  = field(default=None, repr=False)
     psi: Optional[np.ndarray]        = field(default=None, repr=False)
-
+    observer: Optional[np.ndarray]   = field(default=None, repr=False)
     def sample_delta_from_Pk(self, rng=None, Pk_callable=None):
         if rng is None:
             rng = np.random.default_rng()

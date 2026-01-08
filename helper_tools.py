@@ -1091,9 +1091,7 @@ def los_unit_and_radius(box, observer_xyz, periodic=False, pad=0):
 
     cx = cy = cz = 0.5 * L  # box center
     x0, y0, z0 = observer_xyz
-    # x0 += cx
-    # y0 += cy
-    # z0 += cz
+
     RX = X - x0
     RY = Y - y0
     RZ = Z - z0
