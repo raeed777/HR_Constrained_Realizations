@@ -7,7 +7,7 @@ from Cosmology import Cosmology
 from pspectra import Pk_phys_nowiggle, Pk_phys_at_z_from_P0
 from typing import Optional
 from pspectra_camb import build_camb_pk_callable
-
+from Obs_Geometry import Obs_Geometry
 
 @dataclass
 class Data:
@@ -15,6 +15,7 @@ class Data:
     cosmology: Cosmology
     delta_r: Optional[np.ndarray]    = field(default=None, repr=False)
     phi_fft: Optional[np.ndarray]    = field(default=None, repr=False)
+    phi_0: Optional[np.ndarray]    = field(default=None, repr=False)
     phi_sten: Optional[np.ndarray]   = field(default=None, repr=False)
     v_fft: Optional[np.ndarray]      = field(default=None, repr=False)
     v_sten: Optional[np.ndarray]     = field(default=None, repr=False)
@@ -141,7 +142,7 @@ class Data:
         cosmo = self.cosmology
         a, H, f = cosmo.a, cosmo.H, cosmo.f
         n = box.n
-
+        dx3 = box.dx**3
         # --- k-grid and |k|^2 ---
         KX, KY, KZ, K, K2 = kgrid_rfft3d(box)
 
@@ -175,18 +176,15 @@ class Data:
         phik = np.fft.rfftn(self.phi_fft, s=(n, n, n))
 
         # --- Whiten: ψ̂ = φ̂ / sqrt(P_φ) ---
-        sqrt_Pphi = np.zeros_like(P_phi, dtype=float)
-        np.sqrt(P_phi, out=sqrt_Pphi, where=(P_phi > 0))
+        w_last = rfft_multiplicity_last_axis(n)[None, None, :]  # shape (1,1,n//2+1)
 
-        psik = np.zeros_like(phik, dtype=complex)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            psik = np.where(sqrt_Pphi > 0, phik / sqrt_Pphi, 0.0)
+        sqrt_inv = np.zeros_like(P_phi, dtype=float)
+        np.sqrt(dx3 * w_last / P_phi, out=sqrt_inv, where=(P_phi > 0))
 
-        # Enforce zero DC mode for safety
-        psik[0, 0, 0] = 0.0
+        psik = phik * sqrt_inv
+        psik[0,0,0] = 0.0
+        self.psi = np.fft.irfftn(psik, s=(n,n,n)).real
 
-        # --- Back to real space: ψ(x) ---
-        self.psi = np.fft.irfftn(psik, s=(n, n, n)).real
 
 
     def calc_lin_z_rsd_delta(self):
@@ -197,25 +195,42 @@ class Data:
         d_vz_dz = spectral_d_dz(vz, dx)
         self.delta_s_z = self.delta_r - (1.0/(a*H)) * d_vz_dz
 
-    def calc_lin_r_rsd_delta(self, distance):
-        obs_x = self.box.L / 2
-        obs_y = self.box.L / 2
-        obs_z = self.box.L / 2 - 1 * distance * self.box.L
-        obs_xyz = [obs_x, obs_y, obs_z]
-        #print("the observer coordinates are: ", obs_xyz)
-        a = self.cosmology.a
-        H = self.cosmology.H
-        f = self.cosmology.f
-        #self.delta_s_r = L_rsd_radial_fft_operator(self.phi_fft, a, H, f, self.box, distance, include_geom=True, radial_los_dir="z")
-        self.delta_s_r = radial_linear_rsd_highorder(self.delta_r, self.v_fft, self.box, a, H, distance)
-        #output = radial_rsd_diagnostics(self.v_fft, self.box, obs_xyz)
-        #print(output)
+    def calc_lin_r_rsd_delta(self, nhat, r, a, H, f):
+        self.delta_s_r = L_rsd_radial_fft_operator(self.phi_fft, nhat, r, a, H, f, self.box, include_geom=True)
     
-    def generate_mock_fields(self, distance = 0, rng=None, Pk_callable=None):
+    def evolve_phi_field(self, Dphi_grid):
+        """
+        Apply the velocity-potential growth factor D_φ(x) in real space:
+            (D_φ u)(x) = D_φ(x) * u(x).
+
+        Assumes Obs_Geometry has been attached and Dphi_grid initialized.
+        """
+        if Dphi_grid is None:
+            raise ValueError("Dphi_grid is none, please pass a Dphi_grid.")
+        Dφ = Dphi_grid
+        # Broadcasting-safe: ensure same shape
+        if Dφ.shape != self.phi_fft.shape:
+            raise ValueError(f"Dphi_grid shape {Dφ.shape} does not match input {self.phi_fft.shape}")
+        self.phi_0 = self.phi_fft
+        self.phi_fft = Dφ * self.phi_fft
+
+    def generate_mock_fields(self, obs_geometry:Obs_Geometry, rng=None, Pk_callable=None):
+
+        nhat = obs_geometry.nhat_grid
+        r = obs_geometry.r_grid
+        a = obs_geometry.a_grid
+        f = obs_geometry.f_grid
+        H = obs_geometry.H_grid
+        Dphi_grid = obs_geometry.Dphi_grid
+
         self.sample_delta_from_Pk(rng, Pk_callable=Pk_callable)
         self.calc_phi()
         self.calc_psi()
+        self.evolve_phi_field(Dphi_grid)
         self.calc_lin_z_rsd_delta()
-        self.calc_lin_r_rsd_delta(distance)
+        
+        self.calc_lin_r_rsd_delta(nhat, r, a, H, f)
+
+    
 
     

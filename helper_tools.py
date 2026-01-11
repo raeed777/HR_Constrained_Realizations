@@ -983,52 +983,36 @@ def subcone_footprints_on_slice(debug, box, *,
 import numpy as np
 
 ################## tools for radial calculations for the rsd delta ###############################
-def L_rsd_radial_fft_operator(phi, a, H, f, box, radial_observer_offset_L, include_geom=True, radial_los_dir="z"):
+def L_rsd_radial_fft_operator(phi, _nhat, _r, a, H, f, box, include_geom=True):
 
-        KX, KY, KZ, K, K2 = kgrid_rfft3d(box)
+    KX, KY, KZ, K, K2 = kgrid_rfft3d(box)
+    Phik = np.fft.rfftn(phi, s=phi.shape)
 
-        Phik = np.fft.rfftn(phi, s=phi.shape)
+    _invR = (1.0 / np.maximum(_r, 1e-30)).astype(np.float32)
 
-        # --- Radial geometry (use EXACT same helper you used to generate RSD) ---
-        def _as_dir(dspec):
-            if isinstance(dspec, str):
-                return dict(x=np.array([1,0,0.], float),
-                            y=np.array([0,1,0.], float),
-                            z=np.array([0,0,1.], float))[dspec.lower()]
-            v = np.asarray(dspec, float)
-            return v / np.linalg.norm(v)
-        los_dir_vec = _as_dir(radial_los_dir)  # e.g., "z" or a 3-vector
-        center = np.array([box.L/2, box.L/2, box.L/2], float)
-        observer_xyz = center - radial_observer_offset_L * box.L * los_dir_vec
-        # use the SAME routine as in your RSD generator
-        nx, ny, nz, r = los_unit_and_radius(box, observer_xyz, periodic=True, pad=0)
+    lap = np.fft.irfftn(-K2 * Phik, s=phi.shape).real
+    Hxx = np.fft.irfftn(-(KX*KX) * Phik, s=phi.shape).real
+    Hyy = np.fft.irfftn(-(KY*KY) * Phik, s=phi.shape).real
+    Hzz = np.fft.irfftn(-(KZ*KZ) * Phik, s=phi.shape).real
+    Hxy = np.fft.irfftn(-(KX*KY) * Phik, s=phi.shape).real
+    Hxz = np.fft.irfftn(-(KX*KZ) * Phik, s=phi.shape).real
+    Hyz = np.fft.irfftn(-(KY*KZ) * Phik, s=phi.shape).real
 
-        # store unit LOS and (optional) 1/r (single precision is fine)
-        _nhat = (nx.astype(np.float32), ny.astype(np.float32), nz.astype(np.float32))
-        _invR = (1.0 / np.maximum(r, 1e-30)).astype(np.float32)
+    nx, ny, nz = _nhat
+    dnn = (nx*nx)*Hxx + (ny*ny)*Hyy + (nz*nz)*Hzz + 2*(nx*ny)*Hxy + 2*(nx*nz)*Hxz + 2*(ny*nz)*Hyz
 
-        lap = np.fft.irfftn(-K2 * Phik, s=phi.shape).real
-        Hxx = np.fft.irfftn(-(KX*KX) * Phik, s=phi.shape).real
-        Hyy = np.fft.irfftn(-(KY*KY) * Phik, s=phi.shape).real
-        Hzz = np.fft.irfftn(-(KZ*KZ) * Phik, s=phi.shape).real
-        Hxy = np.fft.irfftn(-(KX*KY) * Phik, s=phi.shape).real
-        Hxz = np.fft.irfftn(-(KX*KZ) * Phik, s=phi.shape).real
-        Hyz = np.fft.irfftn(-(KY*KZ) * Phik, s=phi.shape).real
+    inner = lap + f * dnn
 
-        nx, ny, nz = _nhat
-        dnn = (nx*nx)*Hxx + (ny*ny)*Hyy + (nz*nz)*Hzz + 2*(nx*ny)*Hxy + 2*(nx*nz)*Hxz + 2*(ny*nz)*Hyz
+    if include_geom:
+        # v_r = -∂_n φ computed spectrally
+        phi_x = np.fft.irfftn((1j*KX) * Phik, s=phi.shape).real
+        phi_y = np.fft.irfftn((1j*KY) * Phik, s=phi.shape).real
+        phi_z = np.fft.irfftn((1j*KZ) * Phik, s=phi.shape).real
+        vr = -(nx*phi_x + ny*phi_y + nz*phi_z)
+        inner = inner - 2.0 * f * vr * _invR
 
-        inner = lap + f * dnn
-
-        if include_geom:
-            # v_r = -∂_n φ computed spectrally
-            phi_x = np.fft.irfftn((1j*KX) * Phik, s=phi.shape).real
-            phi_y = np.fft.irfftn((1j*KY) * Phik, s=phi.shape).real
-            phi_z = np.fft.irfftn((1j*KZ) * Phik, s=phi.shape).real
-            vr = -(nx*phi_x + ny*phi_y + nz*phi_z)
-            inner = inner - 2.0 * f * vr * _invR
-
-        return inner / (a*H*f + 1e-30)
+    aHf = (a * H * f).astype(np.float64)
+    return inner / (a*H*f + 1e-30)
 
 
 # ========== Low-level 4th-order finite-difference ops ==========

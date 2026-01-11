@@ -4,17 +4,7 @@ from Cosmology import Cosmology
 from Obs_Geometry import Obs_Geometry
 from helper_tools import kgrid_rfft3d, Pphi_from_Pdelta, los_unit_and_radius
 import pickle, time, copy
-
-class Operators:
-    """
-    Spectral operators for ψ / φ reconstruction:
-      - builds P_δ(k) and P_φ(k)
-      - stores S_φ^{-1}(k) (for φ-based solvers) and S_φ^{1/2}(k) (for ψ-based solvers)
-      - provides k-grids and radial LOS geometry
-      - defines spectral φ→δ and φ→δ_s (PP) symbols
-    """
-
-    from Obs_Geometry import Obs_Geometry
+from helper_tools import rfft_multiplicity_last_axis
 
 class Operators:
     def __init__(self,
@@ -34,24 +24,36 @@ class Operators:
         self.Pdelta = Pdelta_callable(self.K)          # (Mpc/h)^3
         self.Pphi   = Pphi_from_Pdelta(self.K, self.Pdelta, a, H, f)
 
-        # --- S_φ^{-1}(k) = dx^3 / P_φ(k)  (for φ-based solvers) ---
         dx3 = box.dx**3
-        self.Sphi_inv_k = np.zeros_like(self.Pphi, dtype=float)
-        np.divide(dx3, self.Pphi, out=self.Sphi_inv_k, where=(self.Pphi > 0.0))
-        self.Sphi_inv_k[0, 0, 0] = 0.0   # no DC prior
+        self.dx3 = dx3
 
-        # --- S_φ^{1/2}(k) = sqrt(P_φ(k)) (for ψ-based solvers: φ̂ = S_φ^{1/2} ψ̂) ---
-        self.Sphi_sqrt_k = np.zeros_like(self.Pphi, dtype=float)
-        np.sqrt(self.Pphi, out=self.Sphi_sqrt_k, where=(self.Pphi > 0.0))
+        Pphi = np.asarray(self.Pphi, dtype=float)
+
+        # rFFT multiplicity weights w(kz): shape (1,1,n//2+1), broadcasts over (kx,ky)
+        w_last = rfft_multiplicity_last_axis(box.n)[None, None, :].astype(float)
+        self.w_k = w_last
+
+        # S(k) = Pphi / (dx3 * w)
+        self.Sphi_k = np.zeros_like(Pphi)
+        np.divide(Pphi, dx3 * w_last, out=self.Sphi_k, where=(Pphi > 0.0))
+        self.Sphi_k[0, 0, 0] = 0.0
+
+        # S^{-1}(k) = dx3 * w / Pphi
+        self.Sphi_inv_k = np.zeros_like(Pphi)
+        np.divide(dx3 * w_last, Pphi, out=self.Sphi_inv_k, where=(Pphi > 0.0))
+        self.Sphi_inv_k[0, 0, 0] = 0.0
+
+        # S^{+1/2}(k)
+        self.Sphi_sqrt_k = np.zeros_like(Pphi)
+        np.sqrt(self.Sphi_k, out=self.Sphi_sqrt_k, where=(self.Sphi_k > 0.0))
         self.Sphi_sqrt_k[0, 0, 0] = 0.0
 
-        # Optional: S_φ^{-1/2}(k) for diagnostics / φ→ψ
-        self.Sphi_sqrt_inv_k = np.zeros_like(self.Pphi, dtype=float)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            self.Sphi_sqrt_inv_k = np.where(self.Sphi_sqrt_k > 0.0,
-                                            1.0 / self.Sphi_sqrt_k,
-                                            0.0)
+        # S^{-1/2}(k)
+        self.Sphi_sqrt_inv_k = np.zeros_like(Pphi)
+        np.sqrt(self.Sphi_inv_k, out=self.Sphi_sqrt_inv_k, where=(self.Sphi_inv_k > 0.0))
         self.Sphi_sqrt_inv_k[0, 0, 0] = 0.0
+
+
 
         # --- φ -> δ and φ -> δ_s (PP) symbols, purely spectral ---
         self.Lk_real = -(self.K2) / (a * H * f + 1e-30)
@@ -76,6 +78,10 @@ class Operators:
 
         # (optional) keep z_grid if you want it later
         self.z_grid = getattr(obs_geometry, "z_grid", None)
+        self.a_grid = getattr(obs_geometry, "a_grid", None)
+        self.H_grid = getattr(obs_geometry, "H_grid", None)
+        self.f_grid = getattr(obs_geometry, "f_grid", None)
+        self.aHf_grid = (self.a_grid * self.H_grid * self.f_grid).astype(np.float64)
 
 
     # ---------- Prior operators in Fourier space ----------
@@ -95,7 +101,7 @@ class Operators:
         """
         Map ψ(x) -> φ(x) using:
             φ̂(k) = S_φ^{1/2}(k) ψ̂(k),
-        where S_φ^{1/2}(k) = sqrt(P_φ(k)).
+        where S_φ^{1/2}(k) = sqrt(P_φ(k)/dx^3*w).
         """
         Psi_k = np.fft.rfftn(psi)
         Phi_k = self.Sphi_sqrt_k * Psi_k
@@ -159,7 +165,7 @@ class Operators:
 
     # ========= NEW: radial RSD apply (hybrid spectral) =========
     def apply_L_rsd_radial_fft(self, phi, include_geom=True):
-        a, H, f = self.a, self.H, self.f
+        a, H, f = self.a_grid, self.H_grid, self.f_grid
         KX, KY, KZ, K2 = self.KX, self.KY, self.KZ, self.K2
 
         Phik = np.fft.rfftn(phi, s=phi.shape)
@@ -175,7 +181,7 @@ class Operators:
         nx, ny, nz = self._nhat
         dnn = (nx*nx)*Hxx + (ny*ny)*Hyy + (nz*nz)*Hzz + 2*(nx*ny)*Hxy + 2*(nx*nz)*Hxz + 2*(ny*nz)*Hyz
 
-        inner = lap + f * dnn
+        inner = lap + self.f_grid * dnn
 
         if include_geom:
             # v_r = -∂_n φ computed spectrally
@@ -183,25 +189,16 @@ class Operators:
             phi_y = np.fft.irfftn((1j*KY) * Phik, s=phi.shape).real
             phi_z = np.fft.irfftn((1j*KZ) * Phik, s=phi.shape).real
             vr = -(nx*phi_x + ny*phi_y + nz*phi_z)
-            inner = inner - 2.0 * f * vr * self._invR
+            inner = inner - 2.0 * self.f_grid * vr * self._invR
 
-        return inner / (a*H*f + 1e-30)
+        return inner / (self.aHf_grid + 1e-30)
+
     
     def apply_Lt_rsd_radial_fft(self, y, include_geom=True):
-        """
-        Adjoint of the radial RSD operator under periodic BCs.
-
-        If include_geom=False:
-            L = -(∇² + f n_i n_j ∂i∂j)/(a H f) is self-adjoint ⇒ L^T = L.
-
-        If include_geom=True:
-            Core Cφ = ∇²φ + f (n_i n_j) ∂i∂j φ + 2 f (n·∇φ)/r
-            Then L = -(1/(a H f)) C, and L^T y = -(1/(a H f)) C^T y with
-                C^T y = ∇² y + f ∂i∂j( (n_i n_j) y ) - 2 f ∇·( (y/r) n )
-        """
-        a, H, f = self.a, self.H, self.f
+        # If you REALLY want exact self-adjointness for constant f, use this branch
         if not include_geom:
-            # proper adjoint without the geometric term:
+            # Use scalar background values here for debugging
+            a0, H0, f0 = self.a, self.H, self.f   # scalars
             Yk  = np.fft.rfftn(y, s=y.shape)
             lap = np.fft.irfftn(-self.K2 * Yk, s=y.shape).real
 
@@ -220,11 +217,10 @@ class Operators:
             d2_xz = np.fft.irfftn(-(self.KX*self.KZ) * Axz, s=y.shape).real
             d2_yz = np.fft.irfftn(-(self.KY*self.KZ) * Ayz, s=y.shape).real
 
-            term2 = self.f * (d2_xx + d2_yy + d2_zz + 2*d2_xy + 2*d2_xz + 2*d2_yz)
-            return (lap + term2) / (self.a*self.H*self.f + 1e-30)
+            term2 = f0 * (d2_xx + d2_yy + d2_zz + 2*d2_xy + 2*d2_xz + 2*d2_yz)
+            return (lap + term2) / (a0*H0*f0 + 1e-30)
 
-
-
+        # --- include_geom=True: grid-based approximate adjoint ---
         KX, KY, KZ, K2 = self.KX, self.KY, self.KZ, self.K2
         nx, ny, nz = self._nhat
         invR = self._invR
@@ -232,7 +228,6 @@ class Operators:
         Yk  = np.fft.rfftn(y, s=y.shape)
         lap = np.fft.irfftn(-K2 * Yk, s=y.shape).real
 
-        # f ∂i∂j( (n_i n_j) y )  via FFT on the product a_ij = (n_i n_j) y
         a_xx = (nx*nx) * y;  Axx = np.fft.rfftn(a_xx, s=y.shape)
         a_yy = (ny*ny) * y;  Ayy = np.fft.rfftn(a_yy, s=y.shape)
         a_zz = (nz*nz) * y;  Azz = np.fft.rfftn(a_zz, s=y.shape)
@@ -247,18 +242,18 @@ class Operators:
         d2_xz = np.fft.irfftn(-(KX*KZ) * Axz, s=y.shape).real
         d2_yz = np.fft.irfftn(-(KY*KZ) * Ayz, s=y.shape).real
 
-        term2 = f * (d2_xx + d2_yy + d2_zz + 2*d2_xy + 2*d2_xz + 2*d2_yz)
+        term2 = self.f_grid * (d2_xx + d2_yy + d2_zz + 2*d2_xy + 2*d2_xz + 2*d2_yz)
 
-        # - 2 f ∇·( (y/r) n )  via FFT divergence
         qx = (y * nx) * invR; QX = np.fft.rfftn(qx, s=y.shape)
         qy = (y * ny) * invR; QY = np.fft.rfftn(qy, s=y.shape)
         qz = (y * nz) * invR; QZ = np.fft.rfftn(qz, s=y.shape)
 
         div_q = np.fft.irfftn(1j*KX*QX + 1j*KY*QY + 1j*KZ*QZ, s=y.shape).real
-        term3 = -2.0 * f * div_q
+        term3 = -2.0 * self.f_grid * div_q
 
         coreT = lap + term2 + term3
-        return coreT / (a*H*f + 1e-30)
+        return coreT / (self.aHf_grid + 1e-30)
+
     
 #############################################
 # -----------------------
@@ -268,9 +263,10 @@ def make_precond_Sphi_spectral(ops):
     n = ops.box.n
     def M(r):
         Rk = np.fft.rfftn(r)
-        Zk = (ops.Pphi / (ops.box.dx**3)) * Rk  # ≈ S_φ
+        Zk = ops.Sphi_k * Rk
         Zk[0,0,0] = 0.0
-        return np.fft.irfftn(Zk, s=(n,n,n))
+        return np.fft.irfftn(Zk, s=(n,n,n)).real
+
     return M
 
 def make_precond_psi_spectral(ops, b_bias, sigma_x, M=None):
@@ -295,7 +291,11 @@ def make_precond_psi_spectral(ops, b_bias, sigma_x, M=None):
     lamL2 = ((K2 + f * KZ**2) / (a*H*f + 1e-30))**2   # note: minus sign drops in |λ|^2
 
     # approximate eigenvalues of A_ψ(k)
-    Apsi_diag = 1.0 + (b_bias**2) * Wbar * lamL2 * ops.Pphi
+    Apsi_diag = 1.0 + (b_bias**2) * Wbar * lamL2 * ops.Sphi_k
+    # i.e. ops.Pphi/(ops.dx3*ops.w_k)
+
+    # or ops.Sphi_k if you store it
+
 
     # avoid zero / NaN
     Apsi_diag = np.maximum(Apsi_diag, 1e-20)
@@ -363,16 +363,12 @@ def pcg(apply_A, b, apply_Minv=None, rtol=1e-10, maxit=1000, verbose=True):
 
 import numpy as np
 
-def _make_Wx(sigma_x, M=None, eps=0.0):
-    """
-    Build voxel weights W_x = M / (sigma_x^2 + eps).
-    sigma_x can be scalar or array; M can be None or mask in [0,1].
-    """
-    sigma2 = np.asarray(sigma_x, dtype=float)**2 + eps
-    Wx = 1.0 / sigma2
+def _make_Wx(sigma_x, M=None, eps=1e-30):
+    sig2 = np.asarray(sigma_x, float)**2
+    W = 1.0 / (sig2 + eps)
     if M is not None:
-        Wx = np.asarray(M, dtype=float) * Wx
-    return Wx
+        W *= np.asarray(M, float)
+    return W
 
 
 def make_matvec_and_rhs_psi_radial_fft(
@@ -430,34 +426,41 @@ def make_matvec_and_rhs_psi_radial_fft(
 
     def apply_A(psi):
         """
-        A_psi psi = psi + b^2 S_phi^{1/2} L^T W L S_phi^{1/2} psi
+        A_psi psi = psi + b^2 S_phi^{1/2} D_phi L^T W L D_phi S_phi^{1/2} psi
         """
         # prior term (identity in ψ)
         y_prior = psi
 
-        # ψ -> φ via S_φ^{1/2}
-        phi = ops.apply_Sphi_sqrt_fft(psi)
+        # 1) ψ -> φ_0 via S_φ^{1/2}   (reference-epoch φ)
+        phi0 = ops.apply_Sphi_sqrt_fft(psi)
 
-        # φ -> data space via radial RSD operator
-        yL = ops.apply_L_rsd_radial_fft(phi, include_geom=include_geom)
+        # 2) evolve φ_0 -> φ_z via D_φ(x)
+        phi_z = ops.apply_Dphi(phi0)
 
-        # apply weights W in real space
+        # 3) φ_z -> data space via radial RSD operator
+        yL = ops.apply_L_rsd_radial_fft(phi_z, include_geom=include_geom)
+
+        # 4) apply weights W in real space
         WyL = W_x * yL
 
-        # L^T W yL back to φ-space
+        # 5) L^T W yL back to φ-space
         if include_geom:
             LtWyL = ops.apply_Lt_rsd_radial_fft(WyL, include_geom=True)
         else:
             # if we ignore geom, L is self-adjoint: L^T = L
             LtWyL = ops.apply_L_rsd_radial_fft(WyL, include_geom=False)
 
-        # apply S_φ^{1/2} again to go back to ψ-space
-        SLtWyL = ops.apply_Sphi_sqrt_fft(LtWyL)
+        # 6) apply D_φ again on the back leg: D_φ L^T W L D_φ φ_0
+        Dphi_LtWyL = ops.apply_Dphi(LtWyL)
 
-        y_data = (b_bias**2) * SLtWyL
+        # 7) apply S_φ^{1/2} to go back to ψ-space
+        SDphiLtWyL = ops.apply_Sphi_sqrt_fft(Dphi_LtWyL)
+
+        # 8) multiply by b^2
+        y_data = (b_bias**2) * SDphiLtWyL
 
         return y_prior + y_data
-
+    
     # Build RHS: rhs = b S_φ^{1/2} L^T W d
     rhs_core = W_x * d
     if include_geom:
@@ -471,15 +474,10 @@ def make_matvec_and_rhs_psi_radial_fft(
 
 
 def _get_sigma_x(obs_data):
-    """
-    Try to pull per-voxel noise sigma from the obs_data object.
-    Accepts either .sigma_noise or .sigma.
-    """
+    # just return the field or scalar you stored above
     sig = getattr(obs_data, "sigma_noise", None)
     if sig is None:
-        sig = getattr(obs_data, "sigma", None)
-    if sig is None:
-        raise ValueError("ObservedData must have .sigma_noise or .sigma")
+        raise ValueError("obs_data.sigma_noise is None; generate noise first.")
     return sig
 
 
@@ -536,7 +534,7 @@ def Wiener_solve_psi_radial_fft(
 
     # Preconditioner: spectral S_φ-like smoother (optional but helpful)
     precond = make_precond_psi_spectral(ops_fft, b_bias, sigma_x, M)
-    #precond = make_precond_psi_kdiag(ops_fft, b_bias, sigma_x, M)    
+
     # Solve A_psi ψ = rhs with PCG
     t0 = time.perf_counter()
     psi = pcg(A, rhs, apply_Minv=precond, rtol=rtol, maxit=maxit, verbose=verbose)
@@ -555,6 +553,7 @@ def Wiener_solve_psi_radial_fft(
 def Constrained_realization_psi_radial_fft(
     ops_fft: "Operators",
     obs_data,
+    obs_geometry:Obs_Geometry,
     *,
     include_geom=True,
     rng=None,
@@ -588,10 +587,10 @@ def Constrained_realization_psi_radial_fft(
 
     # 1) Prior draw: φ_rand from your existing Data generator
     truth = Data(box, cosmo)
-    truth.generate_mock_fields(rng=rng)          # builds delta_r, phi_fft, etc.
+    truth.generate_mock_fields(obs_geometry, rng=rng)          # builds delta_r, phi_fft, etc.
     if getattr(truth, "phi_fft", None) is None:
         truth.calc_phi()
-    phi_rand = truth.phi_fft
+    phi_rand = truth.phi_0
 
     # 2) Mock observation: y_rand = M [ b L φ_rand + n_rand ]
     nshape = (box.n, box.n, box.n)
@@ -601,9 +600,14 @@ def Constrained_realization_psi_radial_fft(
         sig = np.asarray(sigma_x, float)
         n_rand = rng.normal(0.0, 1.0, size=sig.shape) * sig
 
-    y_rand = b_bias * ops_fft.apply_L_rsd_radial_fft(phi_rand, include_geom=include_geom) + n_rand
+    # y_rand = b_bias * ops_fft.apply_L_rsd_radial_fft(phi_rand, include_geom=include_geom) + n_rand
+    # if M is not None:
+    #     y_rand = np.asarray(M, float) * y_rand
+
+    phi_z_rand = ops_fft.apply_Dphi(phi_rand)
+    y_rand = b_bias * ops_fft.apply_L_rsd_radial_fft(phi_z_rand, include_geom=include_geom) + n_rand
     if M is not None:
-        y_rand = np.asarray(M, float) * y_rand
+        y_rand = M * y_rand
 
     # 3) Residual between real data and mock data
     residual = d - y_rand
@@ -620,7 +624,7 @@ def Constrained_realization_psi_radial_fft(
             LtWres = ops_fft.apply_Lt_rsd_radial_fft(core, include_geom=True)
         else:
             LtWres = ops_fft.apply_L_rsd_radial_fft(core, include_geom=False)
-        rhs_psi = b_bias * ops_fft.apply_Sphi_sqrt_fft(LtWres)
+        rhs_psi = b_bias * ops_fft.apply_Sphi_sqrt_fft(ops_fft.apply_Dphi(LtWres))
 
         psi_corr = pcg(A_psi, rhs_psi, apply_Minv=precond_psi,
                        rtol=rtol, maxit=maxit, verbose=verbose)

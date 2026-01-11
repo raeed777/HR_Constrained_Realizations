@@ -36,6 +36,8 @@ class Obs_Geometry:
     z_grid:    Optional[np.ndarray] = field(default=None, repr=False)
     D_grid:    Optional[np.ndarray] = field(default=None, repr=False)
     f_grid:    Optional[np.ndarray] = field(default=None, repr=False)
+    a_grid:    Optional[np.ndarray] = field(default=None, repr=False)
+    H_grid:    Optional[np.ndarray] = field(default=None, repr=False)
 
     # ------------------ Observer placement ------------------ #
     def set_observer(self, offset_L=5.0, los_dir="z"):
@@ -149,6 +151,26 @@ class Obs_Geometry:
         f_flat = _growth_rate(col, z_flat)
         self.f_grid = f_flat.reshape(self.r_grid.shape)
 
+    def compute_a_grid(self):
+        """
+        Compute scale factor a(x) = 1 / (1 + z(x)) on the same grid as r_grid.
+        """
+        if self.z_grid is None:
+            raise ValueError("z_grid not set. Call compute_z_grid() first.")
+
+        self.a_grid = 1.0 / (1.0 + self.z_grid)
+
+    def compute_H_grid(self):
+        """
+        Compute H(x) = H(z(x)) on the same grid as r_grid, in km/s/Mpc.
+        """
+        if self.z_grid is None:
+            raise ValueError("z_grid not set. Call compute_z_grid() first.")
+
+        col = col_cosmo.getCurrent()   # assumes you've done cosmology.setCosmology('planck18') somewhere
+        self.H_grid = col.Hz(self.z_grid)  # shape same as z_grid (and r_grid)
+
+
     def compute_Dphi_grid(self):
         """
         Build the grid of velocity–potential growth factors D_φ(r) from the
@@ -165,17 +187,23 @@ class Obs_Geometry:
             raise ValueError("D_grid not set. Call compute_D_grid() first.")
         if self.f_grid is None:
             raise ValueError("f_grid not set. Call compute_f_grid() first.")
+        if self.a_grid is None:
+            raise ValueError("a_grid not set. Call compute_a_grid() first.")
+        if self.H_grid is None:
+            raise ValueError("H_grid not set. Call compute_H_grid() first.")
 
         # Colossus cosmology currently in use (global)
         col = col_cosmo.getCurrent()
 
-        z   = np.asarray(self.z_grid, float)   # shape (n,n,n)
-        Dδ  = np.asarray(self.D_grid, float)   # D_δ(z) / D_δ(z_ref)
-        f_z = np.asarray(self.f_grid, float)   # f(z)
+        z     = np.asarray(self.z_grid, float)   # shape (n,n,n)
+        a_z   = np.asarray(self.a_grid, float)   # shape (n,n,n)
+        H_z   = np.asarray(self.H_grid, float)   # shape (n,n,n)
+        Dδ    = np.asarray(self.D_grid, float)   # D_δ(z) / D_δ(z_ref)
+        f_z   = np.asarray(self.f_grid, float)   # f(z)
 
         # a(z) and H(z)
-        a_z = 1.0 / (1.0 + z)
-        H_z = col.Hz(z)                        # vectorized in Colossus
+        # a_z = 1.0 / (1.0 + z)
+        # H_z = col.Hz(z)                        # vectorized in Colossus
 
         # reference values at z_ref
         z0 = float(self.z_ref)
@@ -198,6 +226,18 @@ class Obs_Geometry:
         """
         self.compute_r_grid()
         self.compute_z_grid(z_max=z_max, Nz=Nz)
-        self.compute_D_grid(z_max=z_max, Nz=Nz)
-        self.compute_f_grid(z_max=z_max, Nz=Nz)
+        self.compute_a_grid()
+        self.compute_H_grid()
+        self.compute_D_grid()
+        self.compute_f_grid()
         self.compute_Dphi_grid()
+
+    def turn_grids_static(self):
+        col = col_cosmo.getCurrent()
+        z0 = float(self.z_ref)
+        one_grid = np.ones_like(self.r_grid, dtype=np.float64)
+        self.a_grid = one_grid
+        self.H_grid = one_grid * col.Hz(z0)
+        self.f_grid = one_grid * _growth_rate(col, z0)
+        self.D_grid = one_grid 
+        self.Dphi_grid = one_grid 

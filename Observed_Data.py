@@ -48,6 +48,7 @@ class ObservedData(Data):
         n = obs_field.shape[0]
 
         base = float(obs_field.std()) if obs_field.std() > 0 else 1.0
+        #base = float(self.delta_r.std()) if self.delta_r.std() > 0 else 1.0
         sigma0 = sigma_frac * base
         if jitter_frac > 0:
             lo, hi = (1.0 - jitter_frac)*sigma0, (1.0 + jitter_frac)*sigma0

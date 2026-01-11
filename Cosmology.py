@@ -4,13 +4,14 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Cosmology:
-    a: float     # scale factor at the chosen redshift
-    H: float     # H(z) [km/s/Mpc]
-    f: float     # growth rate f = d ln D / d ln a at that z
-    Om: float    # Ω_m,0 today
-    h: float     # h = H0 / (100 km/s/Mpc)
-    ns: float    # scalar spectral index
-    A: float     # here: we'll store sigma8 for convenience
+    a: float          # scale factor at the chosen redshift
+    H: float          # H(z) [km/s/Mpc]
+    f: float          # growth rate f = d ln D / d ln a at that z
+    Om: float         # Ω_m,0 today
+    Ob: float         # Ω_b,0 today
+    h: float          # h = H0 / (100 km/s/Mpc)
+    ns: float         # scalar spectral index
+    sigma8: float     # here: we'll store sigma8 for convenience
 
 
 def make_planck18_cosmology(z: float = 0.0) -> Cosmology:
@@ -32,20 +33,22 @@ def make_planck18_cosmology(z: float = 0.0) -> Cosmology:
 
     # 3) "Today" parameters (z=0) from Colossus
     Om0 = col.Om0
+    Ob0 = col.Ob0
     h   = col.h
     ns  = col.ns
 
     # 4) Amplitude A: use sigma8(today) so existing code still has something sensible
-    A = col.sigma8
+    sigma8 = col.sigma8
 
     return Cosmology(
         a=a,
         H=H,
         f=fz,
         Om=Om0,
+        Ob=Ob0,
         h=h,
         ns=ns,
-        A=A,
+        sigma8=sigma8,
     )
 
 
