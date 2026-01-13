@@ -23,6 +23,7 @@ class Data:
     delta_s_r: Optional[np.ndarray]  = field(default=None, repr=False)
     psi: Optional[np.ndarray]        = field(default=None, repr=False)
     observer: Optional[np.ndarray]   = field(default=None, repr=False)
+    b_bias = 1.7
     def sample_delta_from_Pk(self, rng=None, Pk_callable=None):
         if rng is None:
             rng = np.random.default_rng()
@@ -195,8 +196,8 @@ class Data:
         d_vz_dz = spectral_d_dz(vz, dx)
         self.delta_s_z = self.delta_r - (1.0/(a*H)) * d_vz_dz
 
-    def calc_lin_r_rsd_delta(self, nhat, r, a, H, f):
-        self.delta_s_r = L_rsd_radial_fft_operator(self.phi_fft, nhat, r, a, H, f, self.box, include_geom=True)
+    def calc_lin_r_rsd_delta(self, nhat, r, a, H, f, b_bias):
+        self.delta_s_r = L_rsd_radial_fft_operator(self.phi_fft, nhat, r, a, H, f, b_bias, self.box, include_geom=True)
     
     def evolve_phi_field(self, Dphi_grid):
         """
@@ -214,7 +215,7 @@ class Data:
         self.phi_0 = self.phi_fft
         self.phi_fft = Dφ * self.phi_fft
 
-    def generate_mock_fields(self, obs_geometry:Obs_Geometry, rng=None, Pk_callable=None):
+    def generate_mock_fields(self, b_bias, obs_geometry:Obs_Geometry, rng=None, Pk_callable=None):
 
         nhat = obs_geometry.nhat_grid
         r = obs_geometry.r_grid
@@ -229,7 +230,7 @@ class Data:
         self.evolve_phi_field(Dphi_grid)
         self.calc_lin_z_rsd_delta()
         
-        self.calc_lin_r_rsd_delta(nhat, r, a, H, f)
+        self.calc_lin_r_rsd_delta(nhat, r, a, H, f, b_bias)
 
     
 

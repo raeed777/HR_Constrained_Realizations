@@ -983,7 +983,7 @@ def subcone_footprints_on_slice(debug, box, *,
 import numpy as np
 
 ################## tools for radial calculations for the rsd delta ###############################
-def L_rsd_radial_fft_operator(phi, _nhat, _r, a, H, f, box, include_geom=True):
+def L_rsd_radial_fft_operator(phi, _nhat, _r, a, H, f, b, box, include_geom=True):
 
     KX, KY, KZ, K, K2 = kgrid_rfft3d(box)
     Phik = np.fft.rfftn(phi, s=phi.shape)
@@ -1001,7 +1001,7 @@ def L_rsd_radial_fft_operator(phi, _nhat, _r, a, H, f, box, include_geom=True):
     nx, ny, nz = _nhat
     dnn = (nx*nx)*Hxx + (ny*ny)*Hyy + (nz*nz)*Hzz + 2*(nx*ny)*Hxy + 2*(nx*nz)*Hxz + 2*(ny*nz)*Hyz
 
-    inner = lap + f * dnn
+    inner = b*lap + f * dnn
 
     if include_geom:
         # v_r = -∂_n φ computed spectrally

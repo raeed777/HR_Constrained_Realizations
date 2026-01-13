@@ -35,6 +35,7 @@ class Obs_Geometry:
     nhat_grid: Optional[np.ndarray] = field(default=None, repr=False)
     z_grid:    Optional[np.ndarray] = field(default=None, repr=False)
     D_grid:    Optional[np.ndarray] = field(default=None, repr=False)
+    Dphi_grid:    Optional[np.ndarray] = field(default=None, repr=False)
     f_grid:    Optional[np.ndarray] = field(default=None, repr=False)
     a_grid:    Optional[np.ndarray] = field(default=None, repr=False)
     H_grid:    Optional[np.ndarray] = field(default=None, repr=False)
@@ -220,7 +221,7 @@ class Obs_Geometry:
 
 
     # ------------------ Convenience wrapper ------------------ #
-    def initialize(self, z_max=4.0, Nz=2048):
+    def initialize(self, z_max=10.0, Nz=2048):
         """
         One-shot: r, z, D, f on the grid.
         """

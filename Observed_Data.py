@@ -74,7 +74,7 @@ class ObservedData(Data):
         if self.noise is None:
             raise ValueError("Noise not generated. Call generate_artificial_noise() first.")
 
-        self.d = M * (self.b_bias * obs_field + self.noise)     # outside mask this is 0 (and solver will set W=0 there)
+        self.d = M * (obs_field + self.noise)     # outside mask this is 0 (and solver will set W=0 there)
 
     def generate_mock_fields(self, *args, **kwargs):
         super().generate_mock_fields(*args, **kwargs)
